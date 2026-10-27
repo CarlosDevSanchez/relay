@@ -17,7 +17,7 @@ export interface SettingsProps {
   login(a: Account): void
 }
 
-const SECTIONS = ['Cuentas', 'Cambio de cuenta', 'Notificaciones', 'Skills, agents y commands', 'Conectores (MCP)', 'CLI'] as const
+const SECTIONS = ['Cuentas', 'Cambio de cuenta', 'Notificaciones', 'Consumo', 'Skills, agents y commands', 'Conectores (MCP)', 'CLI'] as const
 
 /** Large modal (native dialog) with a left menu; ESC / backdrop / ✕ close it. */
 export function Settings(p: SettingsProps) {
@@ -38,6 +38,7 @@ export function Settings(p: SettingsProps) {
         {sec === 'Cuentas' && <Accounts {...p} />}
         {sec === 'Cambio de cuenta' && <Handoff />}
         {sec === 'Notificaciones' && <Notifications />}
+        {sec === 'Consumo' && <Consumo />}
         {sec === 'Skills, agents y commands' && <Catalog accounts={p.accounts} />}
         {sec === 'Conectores (MCP)' && <Mcp accounts={p.accounts} />}
         {sec === 'CLI' && <Cli {...p} />}
@@ -99,6 +100,41 @@ function Notifications() {
         Probar notificación
       </button>
       {msg && <p className="text-xs opacity-60">{msg}</p>}
+    </div>
+  )
+}
+
+const rpcError = (e: unknown): string => (e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, '') : String(e))
+
+function Consumo() {
+  const [prefs, setPrefs] = useState<Prefs | null>(null)
+  const [text, setText] = useState('')
+  const [msg, setMsg] = useState<{ ok: boolean; t: string } | null>(null)
+  useEffect(() => void window.relay.prefs.get().then((x) => (setPrefs(x), setText(String(x.usage.warnAt)))), [])
+  if (!prefs) return <Loading />
+  const save = (patch: Partial<Prefs['usage']>) =>
+    window.relay.prefs
+      .set({ usage: { ...prefs.usage, ...patch } })
+      .then((x) => (setPrefs(x), setText(String(x.usage.warnAt)), setMsg({ ok: true, t: 'Guardado' })))
+      .catch((e) => setMsg({ ok: false, t: rpcError(e) }))
+  return (
+    <div className="space-y-4 text-sm">
+      <p className="opacity-70">Relay muestra en cada cuenta el consumo oficial de su sesión de 5 h y de la semana (el que informa el propio CLI) y te avisa una vez por ventana al llegar al umbral.</p>
+      <label className="flex cursor-pointer items-center gap-3">
+        <input type="checkbox" className="toggle toggle-primary" checked={prefs.usage.statusLine} onChange={(e) => void save({ statusLine: e.target.checked })} /> Mostrar el consumo oficial de las cuentas Claude
+      </label>
+      <p className="text-xs opacity-60">
+        Para leerlo, Relay arranca cada sesión de Claude con su propia línea de estado (opción oficial <code className="kbd kbd-xs">--settings</code>; no modifica ningún archivo de ajustes). Mientras está activo, esa línea reemplaza las pistas del pie del CLI (por ejemplo «esc to interrupt»). Si ya tienes una línea de estado propia en los ajustes de la cuenta, Relay la sigue ejecutando y muestra su salida. Solo afecta a las sesiones que abras después de cambiarlo. Codex muestra el consumo cuando sus transcripciones lo incluyen.
+      </p>
+      <fieldset className="fieldset">
+        <legend className="fieldset-legend">Avisar al llegar a (%)</legend>
+        <div className="join">
+          <input className="input join-item w-24" type="number" min={50} max={100} step={1} aria-label="Umbral de aviso" value={text} onChange={(e) => (setText(e.target.value), setMsg(null))} />
+          <button className="btn join-item" disabled={text.trim() === String(prefs.usage.warnAt)} onClick={() => void save({ warnAt: Number(text) })}>Guardar</button>
+        </div>
+        <p className="label">Entero entre 50 y 100. La barra se pone amarilla 20 puntos antes y roja desde el umbral.</p>
+      </fieldset>
+      {msg && <div role="alert" className={`alert alert-soft ${msg.ok ? 'alert-success' : 'alert-error'} py-2`}>{msg.t}</div>}
     </div>
   )
 }

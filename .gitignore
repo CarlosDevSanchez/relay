@@ -5,4 +5,5 @@ dist
 *.log
 .claude
 coverage
+build/icon.iconset/
 e2e/screenshots

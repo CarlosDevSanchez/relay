@@ -14,14 +14,29 @@ const t = 20_000
 // fake claude: logs "<CLAUDE_CONFIG_DIR or UNSET>|<args>" and, like the real CLI, creates .claude.json in the config dir on `auth status`
 const stub = join(tmp, 'claude.stub')
 const log = join(tmp, 'calls.log')
+const settingsLog = join(tmp, 'settings.log')
+const envLog = join(tmp, 'env.log')
 writeFileSync(
   stub,
   `#!/bin/bash
+# Relay passes its status line through the official --settings flag (inline JSON): split it off so the logged argv stays the CLI's own
+args=(); S=
+while [ $# -gt 0 ]; do if [ "$1" = "--settings" ]; then S="$2"; shift 2; else args+=("$1"); shift; fi; done
+set -- "\${args[@]}"
 echo "\${CLAUDE_CONFIG_DIR-UNSET}|$*" >> "${log}"
+# like the real CLI, a session runs the configured statusLine command with the status JSON on stdin (fixture file, re-read every second)
+session() {
+  echo "$S" >> "${settingsLog}"
+  echo "\${RELAY_STATUS_FILE-UNSET}|\${RELAY_USER_STATUSLINE-UNSET}" >> "${envLog}"
+  cmd=$(printf '%s' "$S" | sed -n 's/.*"command":"\\(.*\\)"}}.*/\\1/p')
+  if [ -n "$cmd" ] && [ -n "$STUB_FIXTURE" ]; then
+    for i in $(seq 70); do [ -f "$STUB_FIXTURE" ] && sh -c "$cmd" < "$STUB_FIXTURE" > "${tmp}/statusline-out.$(basename "$CLAUDE_CONFIG_DIR")"; sleep 1; done
+  else sleep 60; fi
+}
 case "$1 $2" in
   "auth status") [ -n "$CLAUDE_CONFIG_DIR" ] && touch "$CLAUDE_CONFIG_DIR/.claude.json"; echo '{"loggedIn":true,"email":"test@example.com","subscriptionType":"max"}' ;;
   "auth login") sleep 1; echo "Paste code here"; read -t 20 -r code; echo "CODE:$code" >> "${log}"; exit 0 ;;
-  "--session-id "*|"--resume "*) sleep 1; echo "Claude Code (stub): sesión interactiva"; sleep 60 ;;
+  "--session-id "*|"--resume "*) sleep 1; echo "Claude Code (stub): sesión interactiva"; session ;;
   *) echo "2.1.0 (Claude Code)" ;;
 esac
 `
@@ -71,6 +86,7 @@ const launch = (d, extra = {}) => {
     const page = await app.firstWindow()
     page.on('pageerror', (e) => console.error('pageerror', e.message))
     await page.getByText('Bienvenido a Relay').waitFor({ timeout: t })
+    await page.getByTestId('logo').first().waitFor({ timeout: t }) // logo in the onboarding header
     await page.getByText('instalado · 2.1.0').waitFor({ timeout: t })
     await page.getByText('Instalación por defecto · test@example.com').waitFor({ timeout: t })
     await page.getByText('sin comprobar').waitFor({ timeout: t })
@@ -100,6 +116,7 @@ const launch = (d, extra = {}) => {
     const card = page.getByTestId('account-card')
     await card.getByText('Test', { exact: true }).waitFor({ timeout: t })
     await card.getByText('test@example.com').waitFor({ timeout: t })
+    await page.locator('aside').getByTestId('logo').waitFor({ timeout: t }) // logo in the sidebar header
     await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
     await page.getByRole('tab').first().waitFor({ timeout: t })
     await page.getByText('activa', { exact: true }).waitFor({ timeout: t })
@@ -258,6 +275,8 @@ const launch = (d, extra = {}) => {
   )
   mkdirSync(d.relayHome, { recursive: true })
   writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([cwd]))
+  // the sidebar lists only sessions Relay knows: this one is "started from Relay"
+  writeFileSync(join(d.relayHome, 'sessions.json'), JSON.stringify([{ provider: 'codex', accountId: 'dddddddd', sessionId: ID, cwd, createdAt: 1, lastActiveAt: 1, origin: 'new', handoffs: [] }]))
   writeFileSync(
     join(d.relayHome, 'accounts.json'),
     JSON.stringify([
@@ -333,6 +352,9 @@ const launch = (d, extra = {}) => {
     await until(() => calls().includes(`${cx.b}|resume ${ID} Continúa exactamente donde lo dejaste.`))
     assert.equal(readFileSync(join(cx.b, rel), 'utf8'), readFileSync(join(cx.a, rel), 'utf8'), 'rollout copied to the same relative path in the target')
     assert.ok(existsSync(join(d.relayHome, 'copies.json')), 'copy recorded')
+    const reg = JSON.parse(readFileSync(join(d.relayHome, 'sessions.json'), 'utf8'))
+    assert.deepEqual(reg[0].handoffs.map((h) => [h.from, h.to]), [['dddddddd', 'eeeeeeee']], 'handoff recorded in the registry')
+    assert.equal(reg[0].accountId, 'eeeeeeee')
   } finally {
     await app.close()
   }
@@ -369,5 +391,177 @@ const launch = (d, extra = {}) => {
   assert.deepEqual(readdirSync(join(d.home, '.codex')), ['config.toml'], 'no Claude files (.claude.json, lock, backups) in the imported Codex dir')
   assert.deepEqual(readdirSync(join(d.home, '.codex-bare')), [], 'unimported Codex candidate stays untouched')
   assert.ok(!readFileSync(log, 'utf8').includes(d.home), 'claude never ran against the Codex dirs (nor anything else in this HOME)')
+}
+// ---- scenario 6: official usage bars (status line through --settings), warning, 100% = limited, Consumo prefs; project history = registry only, adopt, forget ----
+{
+  const d = setup('six')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  const proj = join(d.home, 'demo-app')
+  mkdirSync(proj)
+  const cwd = realpathSync(proj)
+  const cfg = { a: join(d.home, 'cfg-a'), b: join(d.home, 'cfg-b') }
+  for (const c of Object.values(cfg)) {
+    mkdirSync(c)
+    writeFileSync(join(c, '.claude.json'), '{}')
+  }
+  const userSettings = JSON.stringify({ statusLine: { type: 'command', command: "printf 'USERLINE'" } }) // Alfa has its own status line: Relay must chain it, not touch the file
+  writeFileSync(join(cfg.a, 'settings.json'), userSettings)
+  mkdirSync(d.relayHome, { recursive: true })
+  writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([cwd]))
+  writeFileSync(
+    join(d.relayHome, 'accounts.json'),
+    JSON.stringify([
+      { id: 'aaaaaaaa', label: 'Alfa', provider: 'claude', configDir: cfg.a, sharedMemory: false },
+      { id: 'bbbbbbbb', label: 'Beta', provider: 'claude', configDir: cfg.b, sharedMemory: false }
+    ])
+  )
+  const enc = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  const OLD = '0d0d0d0d-aaaa-bbbb-cccc-111111111111'
+  const transcript = (cfgDir, id, text) => {
+    const f = join(cfgDir, 'projects', enc, `${id}.jsonl`)
+    mkdirSync(dirname(f), { recursive: true })
+    writeFileSync(f, JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) + '\n')
+    return f
+  }
+  const oldFile = transcript(cfg.b, OLD, 'sesión vieja') // exists before Relay ever ran: not in the history
+  const fixture = join(tmp, 'status-fixture.json')
+  const status = (five, seven) => {
+    const at = Math.floor(Date.now() / 1000)
+    writeFileSync(fixture, JSON.stringify({ session_id: 'x', model: { display_name: 'm' }, rate_limits: { five_hour: { used_percentage: five, resets_at: at + 3 * 3600 }, seven_day: { used_percentage: seven, resets_at: at + 3 * 86400 } } }))
+  }
+  status(48, 31)
+  const calls = () => readFileSync(log, 'utf8').split('\n')
+  const mine = () => (existsSync(settingsLog) ? readFileSync(settingsLog, 'utf8').trim().split('\n').filter((l) => l.includes(d.relayHome)) : []) // the stub logs are shared by all scenarios
+  const until = async (fn) => {
+    for (let i = 0; i < 100; i++) {
+      const v = fn()
+      if (v) return v
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    assert.fail('timeout waiting for the stub')
+  }
+  const app = await launch(d, { STUB_FIXTURE: fixture })
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    const cards = page.getByTestId('account-card')
+    await cards.nth(1).waitFor({ timeout: t })
+    const alfa = cards.filter({ hasText: 'Alfa' })
+    const beta = cards.filter({ hasText: 'Beta' })
+    const side = page.locator('aside')
+    assert.equal(await side.getByRole('button', { name: /sesión vieja/ }).count(), 0, 'a transcript Relay did not create is not in the sidebar')
+
+    // new sessions: one per account, started with Relay's status line (--settings) and the env that locates the status file
+    await alfa.click()
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    await until(() => calls().some((c) => c.startsWith(`${cfg.a}|--session-id `)))
+    await beta.click()
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    await until(() => calls().some((c) => c.startsWith(`${cfg.b}|--session-id `)))
+    const sets = (await until(() => (mine().length >= 2 ? mine() : null))).map((l) => JSON.parse(l))
+    for (const x of sets) {
+      assert.equal(x.statusLine.type, 'command')
+      assert.ok(x.statusLine.command.includes(join(d.relayHome, 'bin', 'statusline.sh')))
+    }
+    const envs = readFileSync(envLog, 'utf8').trim().split('\n')
+    assert.ok(envs.includes(`${join(d.relayHome, 'status', 'aaaaaaaa.json')}|printf 'USERLINE'`), 'the user status line is passed to chain')
+    assert.ok(envs.includes(`${join(d.relayHome, 'status', 'bbbbbbbb.json')}|UNSET`), 'no user status line: nothing to chain')
+    assert.equal(readFileSync(join(cfg.a, 'settings.json'), 'utf8'), userSettings, 'user settings are read-only')
+    assert.ok(!existsSync(join(cfg.b, 'settings.json')), 'no settings file is created in the account dir')
+
+    // official usage bars
+    const bars = alfa.getByTestId('usage-5h')
+    await bars.getByText('48%').waitFor({ timeout: t })
+    await bars.getByText('Sesión 5h').waitFor({ timeout: t })
+    await bars.getByText(/se reinicia .* · actualizado hace|se reinicia .* · actualizado ahora/).waitFor({ timeout: t })
+    await alfa.getByTestId('usage-7d').getByText('31%').waitFor({ timeout: t })
+    await beta.getByTestId('usage-5h').getByText('48%').waitFor({ timeout: t })
+    assert.match(await bars.locator('progress').getAttribute('class'), /progress-success/)
+    assert.equal(readFileSync(join(d.relayHome, 'status', 'aaaaaaaa.json'), 'utf8'), readFileSync(fixture, 'utf8'), 'the script saved the CLI JSON')
+    assert.equal(readFileSync(join(tmp, 'statusline-out.cfg-a'), 'utf8'), 'USERLINE', 'chained: the user status line output is what the CLI shows')
+    assert.equal(readFileSync(join(tmp, 'statusline-out.cfg-b'), 'utf8'), '5h 48% · 7d 31%', 'default compact line')
+    await page.screenshot({ path: join(shots, 'usage.png') })
+
+    // 92% crosses the 90% threshold: one warning per window
+    status(92, 31)
+    await page.getByRole('alert').filter({ hasText: /Alfa lleva 92% de su sesión de 5h · se reinicia/ }).first().waitFor({ timeout: t })
+    await bars.getByText('92%').waitFor({ timeout: t })
+    assert.match(await bars.locator('progress').getAttribute('class'), /progress-error/)
+    // 100% = limited (same state as a transcript limit: the card says so and the account is no handoff target)
+    status(100, 31)
+    await alfa.getByText(/Limitada hasta/).waitFor({ timeout: t })
+
+    // history: the new sessions show up once they have a transcript; the old one only after adopting it
+    const idA = /--session-id (\S+)/.exec(calls().find((c) => c.startsWith(`${cfg.a}|--session-id `)))[1]
+    transcript(cfg.a, idA, 'hola nueva')
+    await side.getByRole('button', { name: /hola nueva/ }).waitFor({ timeout: t }) // sidebar re-lists while tabs are open
+    assert.equal(await side.getByRole('button', { name: /sesión vieja/ }).count(), 0)
+    await side.getByRole('button', { name: 'Opciones de proyecto' }).click()
+    await page.getByRole('menuitem', { name: 'Abrir sesión existente…' }).click()
+    const dlg = page.getByRole('dialog', { name: 'Abrir sesión existente' })
+    await dlg.getByRole('button', { name: /sesión vieja/ }).waitFor({ timeout: t })
+    assert.equal(await dlg.getByRole('button', { name: /hola nueva/ }).count(), 0, 'sessions already in the history are not offered')
+    await dlg.getByRole('button', { name: /sesión vieja/ }).click()
+    await until(() => calls().includes(`${cfg.b}|--resume ${OLD}`))
+    await side.getByRole('button', { name: /sesión vieja/ }).waitFor({ timeout: t })
+    const reg = JSON.parse(readFileSync(join(d.relayHome, 'sessions.json'), 'utf8'))
+    assert.deepEqual(reg.map((e) => e.origin).sort(), ['adopt', 'new', 'new'])
+    // forget: registry entry only
+    await side.getByRole('listitem').filter({ hasText: 'sesión vieja' }).last().getByRole('button', { name: 'Opciones de sesión' }).click()
+    await page.getByRole('menuitem', { name: 'Quitar del historial de Relay' }).click()
+    const ask = page.getByRole('dialog', { name: 'Quitar del historial de Relay' })
+    await ask.waitFor({ timeout: t })
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Cancelar', 'the confirm opens on Cancelar')
+    await ask.getByRole('button', { name: 'Quitar' }).click()
+    await side.getByRole('button', { name: /sesión vieja/ }).waitFor({ state: 'hidden', timeout: t })
+    assert.ok(existsSync(oldFile), 'the transcript is never deleted')
+    assert.ok(!JSON.parse(readFileSync(join(d.relayHome, 'sessions.json'), 'utf8')).some((e) => e.sessionId === OLD))
+
+    // Consumo settings: validation, and with the toggle off new sessions start without --settings
+    await page.getByRole('button', { name: 'Configuración' }).click()
+    const settings = page.getByRole('dialog', { name: 'Configuración' })
+    await settings.getByRole('button', { name: 'Consumo' }).click()
+    await settings.getByLabel('Umbral de aviso').fill('120')
+    await settings.getByRole('button', { name: 'Guardar' }).click()
+    await settings.getByText(/Umbral inválido/).waitFor({ timeout: t })
+    await settings.getByLabel('Umbral de aviso').fill('80')
+    await settings.getByRole('button', { name: 'Guardar' }).click()
+    await settings.getByText('Guardado').waitFor({ timeout: t })
+    await settings.getByLabel('Mostrar el consumo oficial de las cuentas Claude').click()
+    await until(() => JSON.parse(readFileSync(join(d.relayHome, 'prefs.json'), 'utf8')).usage.statusLine === false)
+    assert.equal(JSON.parse(readFileSync(join(d.relayHome, 'prefs.json'), 'utf8')).usage.warnAt, 80)
+    await page.keyboard.press('Escape')
+    await settings.waitFor({ state: 'hidden', timeout: t })
+    await until(() => mine().length >= 3) // alfa, beta and the adopted session (the stub logs a second after it starts)
+    const before = mine().length
+    const n = calls().filter((c) => c.includes('--session-id')).length
+    await alfa.click()
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    await until(() => calls().filter((c) => c.includes('--session-id')).length > n)
+    await page.waitForTimeout(1500)
+    assert.equal(mine().length, before, 'statusLine off: no --settings')
+  } finally {
+    await app.close()
+  }
+}
+// ---- scenario 7: only Codex installed -> the onboarding account dialog defaults to Codex ----
+{
+  const d = setup('seven')
+  copyFileSync(cstub, join(d.bin, 'codex'))
+  const app = await launch(d)
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    await page.getByText('Bienvenido a Relay').waitFor({ timeout: t })
+    await page.getByText('no instalado', { exact: true }).waitFor({ timeout: t })
+    const btn = page.getByRole('button', { name: 'Iniciar sesión con una cuenta nueva' })
+    assert.ok(await btn.isEnabled(), 'enabled when Codex is installed')
+    await btn.click()
+    const dlg = page.getByRole('dialog', { name: 'Nombre de la cuenta' })
+    assert.equal(await dlg.getByLabel('Proveedor').inputValue(), 'codex')
+    await page.keyboard.press('Escape')
+  } finally {
+    await app.close()
+  }
 }
 console.log('e2e OK; screenshots in', shots)

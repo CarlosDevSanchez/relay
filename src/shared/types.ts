@@ -30,6 +30,8 @@ export interface SessionInfo {
   title: string
   mtimeMs: number
   accountId: string
+  /** Relay's history only: account switches this session went through */
+  handoffs?: { from: string; to: string; at: number }[]
 }
 
 export type StartMode = 'new' | 'resume' | 'login'
@@ -90,8 +92,23 @@ export interface Candidate {
   plan?: string
 }
 
+/** One rate-limit window ("5h", "7d", or "<n>h" / "<n>min" for other Codex windows); resetsAt in epoch ms. */
+export interface UsageWindow {
+  id: string
+  pct: number
+  resetsAt: number
+}
+/** Official usage (Claude: the CLI's status line JSON; Codex: rollout `token_count.rate_limits`). Only these fields cross IPC. */
+export interface AccountUsage {
+  accountId: string
+  windows: UsageWindow[]
+  updatedAt: number
+}
+
 export interface Prefs {
   notifications: { system: boolean; sound: boolean }
+  /** statusLine: Relay injects its own status line into Claude sessions (official `--settings`) to read `rate_limits`; warnAt: % that raises a warning (50-100) */
+  usage: { statusLine: boolean; warnAt: number }
   /** after a user-confirmed handoff, the target is started with `message` as the CLI's initial prompt */
   handoff: { autoContinue: boolean; message: string }
 }
@@ -152,7 +169,22 @@ export interface RelayApi {
   }
   /** background shared-memory notices (relink on new project, skipped accounts) */
   onShared(cb: (msg: string) => void): () => void
+  /** only sessions started, resumed or adopted from Relay */
   sessions(cwd: string): Promise<SessionInfo[]>
+  history: {
+    /** transcripts of the project (any account/provider) that are not in Relay's history yet */
+    candidates(cwd: string): Promise<SessionInfo[]>
+    /** adds an existing transcript to Relay's history */
+    adopt(cwd: string, sessionId: string): Promise<void>
+    /** removes the registry entry only; the transcript is never touched */
+    forget(cwd: string, sessionId: string): Promise<void>
+  }
+  usage: {
+    get(): Promise<AccountUsage[]>
+    onUpdate(cb: (u: AccountUsage) => void): () => void
+    /** a window crossed the warning threshold (text already composed in main) */
+    onWarn(cb: (text: string) => void): () => void
+  }
   pty: {
     start(req: StartRequest): Promise<StartResult>
     kill(ptyId: number): Promise<void>

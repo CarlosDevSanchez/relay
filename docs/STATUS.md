@@ -1,0 +1,85 @@
+# Relay · Estado del proyecto y traspaso
+
+Última actualización: 2026-10-27. Documento de traspaso para que cualquier agente o persona pueda continuar el trabajo. Las reglas obligatorias están en [AGENTS.md](../AGENTS.md); el plan por fases, en [ROADMAP.md](../ROADMAP.md).
+
+## 1. Qué es Relay (en una línea)
+App de escritorio (Electron + React + daisyUI + xterm + node-pty, con Bun) que ejecuta los **CLIs oficiales** `claude` y `codex` con varias cuentas propias del usuario. Cuando una cuenta se queda sin cuota, Relay pregunta y continúa la misma sesión en otra cuenta, con el mismo contexto. Relay nunca toca credenciales ni llama a APIs.
+
+## 2. Decisiones tomadas por el usuario (no reabrir)
+| Tema | Decisión |
+|---|---|
+| Motor | El CLI oficial en una terminal embebida. Nada de chat sobre stream-json ni del Agent SDK con suscripción (política de Anthropic). |
+| Cambio de cuenta | Nunca automático: siempre requiere un clic o confirmación del usuario. Después de confirmar, la sesión **continúa sola** con `claude --resume <id> "<mensaje>"` (preferencia, activada por defecto). |
+| Login | Solo con el flujo oficial (`claude auth login` / `codex login`). Relay nunca ve credenciales. |
+| Carpetas importadas | Nunca se borran. Solo se modifican con consentimiento explícito (diálogo en main), por ejemplo para la memoria compartida. |
+| Instalación del CLI | Si falta, se ofrece el instalador oficial, que se ejecuta visible tras confirmar. Relay no empaqueta ningún CLI. |
+| Memoria compartida | `~/.relay/shared` enlazado con symlinks: en las cuentas gestionadas por defecto, en las importadas solo con consentimiento. |
+| UI | daisyUI 5 con temas propios. Inspirada en apps de agentes, **sin imitar la marca** de Claude Code ni de OpenAI. |
+| Logo | **Cerebro de circuitos** en teal (`#5CC8D7`, nodos `#8BE3EC`) sobre azul marino (`#0F1B24`), con la palabra "RELAY" en `relay-logo.svg` (`assets/brand/`). Sustituye al diseño de tarjetas (`{•}`/`>_`), que queda archivado en `assets/brand/archive/`. El acento de la app pasa de ámbar a teal. Prohibido usar el destello de Claude o la nube de Codex. |
+| Consumo | Las cards muestran el % oficial de las ventanas **5h** y **7 días**, y su reinicio, tomados del JSON del status line del CLI (`rate_limits`). |
+| Historial | Los proyectos muestran **solo las sesiones creadas o usadas desde Relay**. Las sesiones antiguas se traen con "Abrir sesión existente…". |
+| Licencia y repo | MIT, `Copyright (c) 2026 Carlos Sánchez`. Repo público `CarlosDevSanchez/relay`, que se publica **al cerrar el MVP**. `main` protegida con PR y aprobación del dueño, sin push directo; el admin puede saltarla. |
+| Ramas | Ramas de feature → `dev` → `main`. Un commit por fase. |
+| Vista enriquecida (F6) | Aprobada en concepto, para después del MVP. Diseño en [docs/design/F6-vista-enriquecida.md](design/F6-vista-enriquecida.md). |
+
+## 3. Proceso de trabajo
+1. Implementa un agente (Sonnet) con el brief de la fase, aplicando la skill *ponytail*.
+2. Audita un agente independiente (Opus), que lee el código y ejecuta las verificaciones: `bun run typecheck`, `bun run test`, `bun run build` y `bun run e2e`.
+3. Se corrige hasta que no quede ningún BLOCKER ni MAJOR. Los MINOR que queden se anotan.
+4. Un commit por fase en `feat/mvp` con `Co-Authored-By`.
+5. Cada fase actualiza AGENTS.md, README, ROADMAP y este archivo.
+6. La UI se verifica con el e2e de Playwright, no solo con tests unitarios. (Lección aprendida: `window.prompt()` no existe en Electron y llegó a romper todos los botones.)
+7. La prueba manual del usuario se hace desde un worktree fijado a un commit, para que el HMR no la interrumpa mientras los agentes editan.
+
+## 4. Hecho (rama `feat/mvp`, base `main`/`dev` = `0b76f82`)
+| Commit | Fase | Contenido |
+|---|---|---|
+| `5bd0f10` | F0 + F1 | Investigación del CLI (`docs/spikes/F0.md`), pestañas multi-PTY, login oficial, renombrar y quitar cuentas, cards de estado |
+| `5ad00dc` | F2 | Detección del límite en vivo, notificaciones, diálogo de cambio solo con confirmación, "esperar al reinicio" |
+| `61ba578` | F2 fix | Seguimiento de `/clear` sin ambigüedad (estado *stale*), cwd de la pestaña, cola de avisos, recordatorios |
+| `1911b67` | F3 | Memoria compartida con symlinks, backups, consentimiento en main para carpetas importadas, detección de deriva |
+| `b0a83f7` | F4 | Configuración, catálogo de skills, MCP redactado, detección e instalación del CLI, onboarding, dashboard, `RELAY_HOME`, e2e |
+| `b81f068` | F4 fix | Override del instalador solo en desarrollo; MCP de la instalación por defecto en `~/.claude.json` |
+| `14427b9` | docs | LICENSE, AGENTS.md, CLAUDE.md (`@AGENTS.md`), README reescrito |
+| `1a87166` | F4.1 | UI daisyUI, Configuración como modal, login guiado, terminal con tema, auto-continuar, foco seguro en los diálogos |
+| `25b1e55` | F5 | Codex del mismo proveedor: cuentas, login, sesiones (solo hilos `codex-tui`), handoff, límite, `AGENTS.md` compartido; restos de F4.1 |
+
+Estado al cierre de F5: 100 tests y e2e con 5 escenarios en verde; auditoría PASS.
+
+## 5. En curso
+- **F5.1 · Consumo e historial + logo**: implementado, sin commit y pendiente de auditoría Opus.
+  - **Consumo:** `src/main/rates.ts` (script `<RELAY_HOME>/bin/statusline.sh` inyectado con `--settings`, tracker de uso con avisos), `src/shared/usage.ts`. Barras "Sesión 5h" y "Semana" en las cards, sección "Consumo" en Configuración, 100% = cuenta limitada, Codex vía `token_count.rate_limits` si existe (forma sin verificar).
+  - **Historial:** `src/main/registry.ts` (`sessions.json`), "Abrir sesión existente…" (`Adopt.tsx`) y "Quitar del historial de Relay". Sin migración: empieza vacío.
+  - **Restos de F5:** README y diálogo de cuenta nueva (Codex por defecto si es el único CLI instalado) hechos.
+  - **Logo conectado** (cerebro-circuito teal sobre navy): icono de ventana y Dock (`build/icon.png`), `relay-mark.svg` en el sidebar, `relay-logo.svg` en el onboarding, favicon, README. Acento de la app = teal (`primary` #5CC8D7 en oscuro, #0E7C8C en claro; neutros con tinte navy). `build/icon.iconset/` en `.gitignore`.
+  - Siguiente paso: auditoría Opus, correcciones, commit.
+
+## 6. Pendiente para cerrar el MVP
+1. Commit de F5.1 (incluye la conexión del logo).
+2. **Prueba manual del usuario** desde un worktree fijado al último commit. Puntos clave que solo se pueden comprobar con cuentas reales:
+   - Claude: que `claude --resume <id> "<msg>"` continúe solo; que la memoria compartida funcione por symlink (`/memory`, `/skills`, auto-memory en `~/.relay/shared`); que el login guiado y el campo del código funcionen; que las barras de consumo aparezcan.
+   - Codex: login interactivo, `codex login status` con sesión iniciada, texto real del 429 y del reinicio, `token_count.rate_limits` real.
+   - Tema oscuro, y avisos por encima de los diálogos.
+3. Merge de `feat/mvp` → `dev` → `main`, mediante PR.
+4. Publicar el repo público `CarlosDevSanchez/relay` y proteger `main` (PR más aprobación del dueño; admin puede saltarla, `enforce_admins` desactivado).
+5. Reproducir la CI en local si se añade (por ahora el repo no tiene workflows).
+
+## 7. Después del MVP
+- **F6 · Vista enriquecida** (lectura del transcript, chat dinámico, dock de terminal siempre visible): [plan](design/F6-vista-enriquecida.md), etapas F6.0–F6.6.
+- Handoff Claude ↔ Codex mediante un brief (transcript más git diff).
+- Empaquetado: `.dmg`, firma y notarización (requiere Apple Developer).
+- Opción C: chat propio solo para cuentas con API key de Console (permitido).
+
+## 8. Riesgos y cosas no verificadas
+- El formato del transcript y de los rollouts es interno y puede cambiar. Los parsers son tolerantes y la terminal siempre queda como respaldo.
+- Codex: el formato del 429 y de los rollouts de sub-agentes viene de los *strings* del binario y de un backend falso, no de una cuenta real.
+- El CLI no tiene un comando oficial para fijar el tema: las cuentas nuevas muestran el selector de tema del CLI la primera vez.
+- Política: varias suscripciones de la misma persona para ampliar el uso podrían chocar con "uso ordinario e individual" (aviso en el README).
+- `~/.claude/.claude.json` (423 B) lo creó la investigación de F0. Es inofensivo y puede borrarse con permiso del usuario.
+
+## 9. Entorno y comandos
+- Requisitos: macOS, Bun, Node ≥ 22.12 y Xcode CLT (para node-pty). `claude` 2.1.312 en `~/.local/bin`; `codex` 0.164.0 en `/opt/homebrew/bin` (instalado con `brew install --cask codex`).
+- `bun install` · `bun run dev` · `bun run typecheck` · `bun run test` · `bun run coverage` · `bun run build` · `bun run e2e` (stubs de `claude` y `codex`, HOME temporal; nunca toca datos reales).
+- Iconos: `node_modules/.bin/electron scripts/build-icons.mjs`.
+- Datos de la app: `~/.relay/` (`accounts.json`, `projects.json`, `prefs.json`, `copies.json`, `sessions.json`, `shared/`, `backups/`, `accounts/<id>/`, `status/`, `bin/`). Se puede cambiar con `RELAY_HOME`.
+- Worktree de prueba manual: `../relay-manual-test` (fijado a `1a87166`). Se elimina al terminar las pruebas, siguiendo la regla de limpieza de worktrees.

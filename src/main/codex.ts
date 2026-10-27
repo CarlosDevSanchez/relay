@@ -1,6 +1,6 @@
 import { closeSync, openSync, readSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Account, AccountStatus, SessionInfo } from '../shared/types'
+import type { Account, AccountStatus, SessionInfo, UsageWindow } from '../shared/types'
 import type { LimitInfo } from './limit'
 import type { CopyRecord } from './store'
 import { isSessionId } from './validate'
@@ -219,7 +219,30 @@ export function parseCodexLimitLine(line: string): (LimitInfo & { ts: number }) 
   return { kind: 'usage', resetText: resetText ?? 'a una hora desconocida', resetAt: resetText ? parseCodexReset(resetText, ts) : null, ts, ...(!resetText && MODEL_LIMIT.test(msg) ? { modelSpecific: true } : {}) }
 }
 
+/** Window id from its length: 300 min = "5h", 10080 = "7d", else "<n>d" / "<n>h" / "<n>min". */
+const windowId = (min: number): string => (min === 300 ? '5h' : min === 10080 ? '7d' : min % 1440 === 0 ? `${min / 1440}d` : min % 60 === 0 ? `${min / 60}h` : `${min}min`)
+
+/**
+ * `event_msg` `token_count` whose `rate_limits` has `primary` / `secondary` windows ({used_percent, window_minutes, resets_at}). Only seen as null with the stub backend
+ * (docs/spikes/F5.md), so the shape is unverified: a window missing any field is skipped, `resets_at` is epoch seconds (milliseconds also accepted).
+ */
+export function parseCodexRates(line: string): { ts: number; windows: UsageWindow[] } | null {
+  if (!line.includes('"token_count"') || !line.includes('"rate_limits"')) return null
+  const d = json(line)
+  const p = d?.payload
+  const ts = Date.parse(d?.timestamp)
+  if (Number.isNaN(ts) || p?.type !== 'token_count' || !p.rate_limits) return null
+  const windows: UsageWindow[] = []
+  for (const w of [p.rate_limits.primary, p.rate_limits.secondary]) {
+    const ok = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n)
+    if (!ok(w?.used_percent) || !ok(w.window_minutes) || w.window_minutes <= 0 || !ok(w.resets_at)) continue
+    windows.push({ id: windowId(w.window_minutes), pct: Math.min(100, Math.max(0, w.used_percent)), resetsAt: w.resets_at < 1e12 ? w.resets_at * 1000 : w.resets_at })
+  }
+  return windows.length ? { ts, windows } : null
+}
+
 interface Scan {
+  rates?: { ts: number; off: number; windows: UsageWindow[] }
   limit?: LimitInfo & { ts: number; off: number }
   /** newest successful model response (token_count with usage info) and its byte offset */
   ok: { ts: number; off: number }[]
@@ -247,6 +270,8 @@ function scanTail(path: string, size: number, mtimeMs: number): Scan {
       const at = off
       off += Buffer.byteLength(l) + 1
       const lim = parseCodexLimitLine(l)
+      const rates = lim ? null : parseCodexRates(l)
+      if (rates && rates.ts >= (scan.rates?.ts ?? 0)) scan.rates = { ...rates, off: at }
       if (lim && lim.ts > (scan.limit?.ts ?? 0)) scan.limit = { ...lim, off: at }
       else if (l.includes('"token_count"') && l.includes('"total_token_usage"')) {
         const ts = Date.parse(json(l)?.timestamp)
@@ -283,6 +308,23 @@ export function scanCodexLimit(configDir: string, now = Date.now(), copied: Reco
   }
   if (!limit || limit.ts <= lastOk || limit.resetAt === null || now >= limit.resetAt) return undefined
   return { kind: limit.kind, resetText: limit.resetText, resetAt: limit.resetAt }
+}
+
+/** Newest `rate_limits` snapshot of rollouts touched in the last 7 days (lines copied in by a handoff are another account's and ignored). */
+export function scanCodexRates(configDir: string, now = Date.now(), copied: Record<string, CopyRecord> = {}): { ts: number; windows: UsageWindow[] } | undefined {
+  let best: { ts: number; windows: UsageWindow[] } | undefined
+  for (const f of rolloutFiles(configDir)) {
+    let st
+    try {
+      st = statSync(f.path)
+    } catch {
+      continue
+    }
+    if (st.mtimeMs < now - 7 * DAY) continue
+    const r = scanTail(f.path, st.size, st.mtimeMs).rates
+    if (r && !(copied[f.id]?.ranges ?? []).some(([a, b]) => r.off >= a && r.off < b) && r.ts > (best?.ts ?? 0)) best = r
+  }
+  return best
 }
 
 /**

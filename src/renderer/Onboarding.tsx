@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import type { Account, AccountStatus, Candidate, CliStatus, ProviderId } from '../shared/types'
 import { LoginPanel } from './Login'
 import { TerminalPane } from './Terminal'
-import { CLAUDE_MISSING, guessProvider, missingMsg, suggestLabel } from './status'
-import type { Modal } from './ui'
+import { guessProvider, missingMsg, suggestLabel } from './status'
+import { Logo, type Modal } from './ui'
 
 interface Props {
   step: 'account' | 'project'
@@ -29,7 +29,8 @@ export function Onboarding(p: Props) {
   return (
     <div className="drag h-full overflow-y-auto bg-base-200">
       <div className="nodrag mx-auto max-w-2xl px-6 py-14">
-        <h1 className="text-3xl font-semibold">Bienvenido a Relay</h1>
+        <Logo size={112} full />
+        <h1 className="mt-4 text-3xl font-semibold">Bienvenido a Relay</h1>
         <p className="mt-2 text-sm opacity-70">
           Relay ejecuta el CLI oficial <code className="kbd kbd-sm">claude</code> con tus propias cuentas, cada una con su carpeta de configuración, y te deja continuar la misma conversación en otra cuenta cuando una se queda sin cuota. Relay nunca ve ni guarda tus credenciales: el inicio de sesión lo hace el propio CLI.
         </p>
@@ -76,6 +77,8 @@ function AccountStep(p: Props) {
   const [cands, setCands] = useState<Candidate[] | null>(null)
   const [msg, setMsg] = useState('')
   const missing = p.cli?.claude.installed === false && p.cli?.codex.installed !== true // new account: enabled when either CLI is installed; create() checks the chosen provider
+  const onlyCodex = p.cli?.claude.installed === false && p.cli?.codex.installed === true
+  const missingTip = p.cli?.claude.installed === false && p.cli?.codex.installed === false ? 'Instala Claude Code (arriba) o Codex (Configuración > CLI) para continuar' : ''
   const st = accId ? p.statuses[accId] : undefined
 
   // re-fetched when the CLI state changes (e.g. right after the installer finished)
@@ -125,9 +128,9 @@ function AccountStep(p: Props) {
           <div className="card card-border bg-base-100 shadow-sm">
             <div className="card-body gap-2 p-4">
               <b className="text-sm">Iniciar sesión con una cuenta nueva</b>
-              <p className="text-sm opacity-70">Crea una carpeta de configuración propia y abre aquí el inicio de sesión oficial de Claude.</p>
+              <p className="text-sm opacity-70">Crea una carpeta de configuración propia y abre aquí el inicio de sesión oficial del CLI (Claude Code o Codex, a elegir).</p>
               <div className="card-actions">
-                <button className="btn btn-primary" disabled={missing || busy} title={missing ? CLAUDE_MISSING : ''} onClick={async () => create(await p.modal.account('Nombre de la cuenta', 'Personal', 'claude'), undefined, true)}>
+                <button className="btn btn-primary" disabled={missing || busy} title={missing ? missingTip : ''} onClick={async () => create(await p.modal.account('Nombre de la cuenta', 'Personal', onlyCodex ? 'codex' : 'claude'), undefined, true)}>
                   {busy && <span className="loading loading-spinner loading-xs" />}Iniciar sesión con una cuenta nueva
                 </button>
               </div>

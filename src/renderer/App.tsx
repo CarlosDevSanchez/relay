@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { type Account, type AccountStatus, type CliStatus, CROSS_PROVIDER, type LimitHit, type ProviderId, type SessionInfo, type SharedReport } from '../shared/types'
+import { type Account, type AccountStatus, type AccountUsage, type CliStatus, CROSS_PROVIDER, type LimitHit, type ProviderId, type SessionInfo, type SharedReport } from '../shared/types'
+import { AdoptDialog } from './Adopt'
 import { LoginPanel } from './Login'
 import { Onboarding } from './Onboarding'
 import { Settings } from './Settings'
@@ -47,6 +48,9 @@ export function App() {
   const [, setExitedCount] = useState(0) // bumps on every exit so Onboarding re-renders
   const exitedRef = useRef(new Set<number>())
   const [view, setView] = useState<'main' | 'settings'>('main')
+  const [usage, setUsage] = useState<Record<string, AccountUsage>>({})
+  const [warnAt, setWarnAt] = useState(90)
+  const [adoptFor, setAdoptFor] = useState<string | null>(null) // project whose existing sessions are being picked
   const [cli, setCli] = useState<CliStatus | null>(null)
   const missing = (p: ProviderId | undefined) => !!p && cli?.[p]?.installed === false
   const provOf = (id: string) => accounts.find((a) => a.id === id)?.provider
@@ -88,6 +92,9 @@ export function App() {
   useEffect(() => {
     if (hit) void window.relay.prefs.get().then((x) => setAutoCont(x.handoff.autoContinue))
   }, [hit?.ptyId])
+
+  const loadWarnAt = useCallback(() => void window.relay.prefs.get().then((x) => setWarnAt(x.usage.warnAt)), [])
+  useEffect(loadWarnAt, [loadWarnAt])
 
   const loadStatus = useCallback(
     (id: string, refresh = false): Promise<AccountStatus | undefined> =>
@@ -152,6 +159,28 @@ export function App() {
       }),
     [loadStatus, detect]
   )
+
+  // transcripts of a new session appear after its first message: re-list while tabs are open
+  const anyTab = tabs.length > 0
+  useEffect(() => {
+    if (!anyTab) return
+    const i = setInterval(() => setTick((n) => n + 1), 8000)
+    return () => clearInterval(i)
+  }, [anyTab])
+
+  // official usage per account; a window at 100% (or one that just left 100%) changes the card's limited state
+  const usageRef = useRef(usage)
+  usageRef.current = usage
+  useEffect(() => {
+    void window.relay.usage.get().then((l) => setUsage(Object.fromEntries(l.map((u) => [u.accountId, u]))))
+    const full = (u?: AccountUsage) => !!u?.windows.some((w) => w.pct >= 100)
+    const offUsage = window.relay.usage.onUpdate((u) => {
+      if (full(u) || full(usageRef.current[u.accountId])) void loadStatus(u.accountId, true)
+      setUsage((m) => ({ ...m, [u.accountId]: u }))
+    })
+    const offWarn = window.relay.usage.onWarn((text) => toasts.push('warning', text))
+    return () => (offUsage(), offWarn())
+  }, [loadStatus])
 
   // quota hit on a live session: ask the user (never switch by itself)
   useEffect(() => {
@@ -307,6 +336,20 @@ export function App() {
       dropHit()
     }, setModalError)
 
+  const adopt = (p: string, s: SessionInfo) =>
+    run(async () => {
+      await window.relay.history.adopt(p, s.id)
+      setAdoptFor(null)
+      await start('resume', s.accountId, s, p)
+    })
+
+  const forget = (p: string, s: SessionInfo) =>
+    run(async () => {
+      if (!(await modal.confirm('Quitar del historial de Relay', `"${s.title}" dejará de aparecer en Relay. La transcripción de la sesión no se borra y puedes volver a añadirla con "Abrir sesión existente…".`, 'Quitar', true, true))) return
+      await window.relay.history.forget(p, s.id)
+      bump()
+    })
+
   const accLabel = (id: string) => accounts.find((a) => a.id === id)?.label ?? ''
   const newSession = () => active && start('new', active)
   const recent = Object.entries(sessMap).flatMap(([p, l]) => l.map((s) => ({ p, s }))).sort((a, b) => b.s.mtimeMs - a.s.mtimeMs).slice(0, 8)
@@ -353,6 +396,10 @@ export function App() {
         projects={projects}
         cwd={cwd}
         sessions={sessMap}
+        usage={usage}
+        warnAt={warnAt}
+        openExisting={setAdoptFor}
+        forget={(p, s) => void forget(p, s)}
         missing={missing}
         newSession={() => void newSession()}
         selectAccount={setActive}
@@ -488,7 +535,7 @@ export function App() {
           accounts={accounts}
           statuses={statuses}
           cli={cli}
-          onClose={() => setView('main')}
+          onClose={() => (setView('main'), loadWarnAt())}
           onDetect={detect}
           onInstall={(p) => void install(p)}
           setShared={setShared}
@@ -543,6 +590,7 @@ export function App() {
           </div>
         </Dialog>
       )}
+      {adoptFor && <AdoptDialog cwd={adoptFor} accounts={accounts} onClose={() => setAdoptFor(null)} onPick={(s) => void adopt(adoptFor, s)} />}
       <ToastStack t={toasts} />
       {modal.node}
     </div>

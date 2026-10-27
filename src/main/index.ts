@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserWindow, Notification, app, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import type { Account, Candidate, HandoffRequest, StartRequest, StartResult } from '../shared/types'
+import { limitedFromUsage } from '../shared/usage'
 import { findRollout, parseCodexLimitLine, watchCodexNewSession } from './codex'
 import { buildEnv, plainEnv } from './env'
 import { buildCatalog } from './catalog'
@@ -15,14 +16,18 @@ import { providers } from './providers'
 import { type LimitInfo, scheduleAt, pickRebind, watchLimits, watchNewSession } from './limit'
 import { candidateDirs, canProbe, claudeProjectDir, dirProvider, isDefaultInstall } from './paths'
 import { loadPrefs, savePrefs } from './prefs'
+import { claudeSettingsArgs, statusEnv, trackUsage, writeStatusScript } from './rates'
+import { adoptable, loadRegistry, register, registerHandoff, touchSession, forgetSession, updateRegistry, visibleSessions } from './registry'
 import { drifted, linkAccount, nextFlag, sharedDir, unlinkAccount } from './shared'
 import { listSessions } from './sessions'
 import { accountStatus } from './usage'
 import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount, setSharedMemory } from './store'
-import { checkAccountId, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSharedToggle, checkStart } from './validate'
+import { checkAccountId, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart } from './validate'
 
 const HOME = process.env.RELAY_HOME || join(homedir(), '.relay')
 let win: BrowserWindow
+let tracker: ReturnType<typeof trackUsage> | undefined
+let statusScript = '' // Relay's status line script (written at startup; empty = could not be written, nothing is injected)
 
 const list = (): Account[] =>
   loadAccounts(HOME).map((a) => {
@@ -56,8 +61,17 @@ function notify(title: string, onClick?: () => void, force = false): boolean {
   return true
 }
 
-const ptyData = (id: number, d: string): void => send('pty:data', id, d)
+const touched = new Map<number, number>()
+const ptyData = (id: number, d: string): void => {
+  send('pty:data', id, d)
+  const sid = ptyInfo(id)?.sessionId
+  if (sid && Date.now() - (touched.get(id) ?? 0) > 60_000) {
+    touched.set(id, Date.now()) // history: "last active", at most once a minute per pty
+    updateRegistry(HOME, (l) => touchSession(l, sid))
+  }
+}
 const ptyExit = (id: number, code: number): void => {
+  touched.delete(id)
   watchers.get(id)?.stop()
   watchers.delete(id)
   send('pty:exit', id, code)
@@ -74,14 +88,17 @@ async function start(req: StartRequest, message?: string): Promise<StartResult> 
   const a = checkStart(req, loadAccounts(HOME), loadProjects(HOME))
   const p = providers[a.provider]
   let sid = sessionId
+  // official usage: Relay's status line script through `--settings` (user settings files are only read, to chain their own status line)
+  const statusLine = a.provider === 'claude' && mode !== 'login' && statusScript !== '' && loadPrefs(HOME).usage.statusLine
+  const extra = statusLine ? claudeSettingsArgs(statusScript) : []
   let args: string[] = p.loginArgs
   let dir = cwd
   if (mode === 'new') {
     sid = p.assignsId ? randomUUID() : undefined // Codex assigns its own id: discovered below from the new rollout
-    args = p.newArgs(sid ?? '')
+    args = p.newArgs(sid ?? '', extra)
   } else if (mode === 'resume') {
     if (!sid) throw new Error('sessionId required')
-    args = p.resumeArgs(sid, message)
+    args = p.resumeArgs(sid, message, extra)
   } else {
     dir = homedir() // login: official `auth login` flow
     sid = undefined
@@ -90,12 +107,14 @@ async function start(req: StartRequest, message?: string): Promise<StartResult> 
     p.bin,
     args,
     dir,
-    buildEnv(a),
+    statusLine ? { ...buildEnv(a), ...statusEnv(HOME, a) } : buildEnv(a),
     a.id,
     sid,
     ptyData,
     ptyExit
   )
+  const ref = (id: string) => ({ provider: a.provider, accountId: a.id, sessionId: id, cwd: dir })
+  if (mode !== 'login' && sid) updateRegistry(HOME, (l) => register(l, ref(sid!), mode === 'new' ? 'new' : 'resume'))
   // live quota detection: tail the session transcript from its current end; follow /clear (new session id).
   // Codex new sessions have no id yet: the first new rollout of this cwd binds the tab (setPtySession + 'pty:session').
   if (mode !== 'login') {
@@ -123,6 +142,7 @@ async function start(req: StartRequest, message?: string): Promise<StartResult> 
         cur = d.id
         t = tail(d.id)
         setPtySession(ptyId, d.id)
+        updateRegistry(HOME, (l) => register(l, ref(d.id), 'new')) // Codex: first bind of a new session; Claude: /clear
         send('pty:session', ptyId, d.id)
       }
     }
@@ -179,10 +199,13 @@ function handle(): void {
     pruneCopies(HOME)
     return list()
   })
-  ipcMain.handle('accounts:status', (_e, id: string, refresh?: boolean) => {
+  ipcMain.handle('accounts:status', async (_e, id: string, refresh?: boolean) => {
     const a = checkAccountId(id, loadAccounts(HOME))
     // an imported dir is only asked when the probe cannot create files in it (see canProbe); Relay's own dirs are always asked
-    return accountStatus(a, refresh === true, loadCopies(HOME)[a.id], isManaged(HOME, a) || canProbe(a.configDir, homedir(), a.provider))
+    const s = await accountStatus(a, refresh === true, loadCopies(HOME)[a.id], isManaged(HOME, a) || canProbe(a.configDir, homedir(), a.provider))
+    // official usage at 100% = limited too (same state the transcript scan produces: handoff targets and cards reuse it)
+    const lim = s.limited ? undefined : limitedFromUsage(tracker?.get().find((u) => u.accountId === a.id)?.windows ?? [])
+    return lim ? { ...s, limited: lim } : s
   })
   ipcMain.handle('shared:set', async (_e, id: unknown, enabled: unknown) => {
     const a = checkSharedToggle(id, enabled, loadAccounts(HOME))
@@ -226,9 +249,21 @@ function handle(): void {
     }
     return all
   })
-  ipcMain.handle('sessions:list', (_e, cwd: string) =>
-    loadProjects(HOME).includes(cwd) ? listSessions(loadAccounts(HOME), cwd) : []
-  )
+  ipcMain.handle('sessions:list', (_e, cwd: string) => (loadProjects(HOME).includes(cwd) ? visibleSessions(loadRegistry(HOME), listSessions(loadAccounts(HOME), cwd), cwd) : []))
+  ipcMain.handle('history:candidates', (_e, cwd: string) => (loadProjects(HOME).includes(cwd) ? adoptable(loadRegistry(HOME), listSessions(loadAccounts(HOME), cwd), cwd) : []))
+  ipcMain.handle('history:adopt', (_e, cwd: unknown, sessionId: unknown) => {
+    const r = checkSessionRef(cwd, sessionId, loadProjects(HOME))
+    const accounts = loadAccounts(HOME)
+    const s = adoptable(loadRegistry(HOME), listSessions(accounts, r.cwd), r.cwd).find((x) => x.id.toLowerCase() === r.sessionId.toLowerCase())
+    const acc = s && accounts.find((x) => x.id === s.accountId)
+    if (!s || !acc) throw new Error('No hay una transcripción de esa sesión en este proyecto')
+    updateRegistry(HOME, (l) => register(l, { provider: acc.provider, accountId: acc.id, sessionId: s.id, cwd: r.cwd }, 'adopt'))
+  })
+  ipcMain.handle('history:forget', (_e, cwd: unknown, sessionId: unknown) => {
+    const r = checkSessionRef(cwd, sessionId, loadProjects(HOME))
+    updateRegistry(HOME, (l) => forgetSession(l, r.sessionId)) // the registry entry only; transcripts are never deleted
+  })
+  ipcMain.handle('usage:get', () => tracker?.get() ?? [])
   ipcMain.handle('cli:detect', async () => {
     const env = plainEnv()
     const [claude, codex] = await Promise.all([detectCli(providers.claude.bin, env), detectCli(providers.codex.bin, env)])
@@ -288,14 +323,25 @@ function handle(): void {
         recordCopy(HOME, to.id, req.sessionId, r)
       },
       () => start({ accountId: to.id, cwd: req.cwd, mode: 'resume', sessionId: req.sessionId }, message)
-    ).then((r) => (message ? { ...r, autoContinued: true } : r))
+    ).then((r) => {
+      updateRegistry(HOME, (l) => registerHandoff(l, { provider: to.provider, accountId: to.id, sessionId: req.sessionId, cwd: req.cwd }, from.id))
+      return message ? { ...r, autoContinued: true } : r
+    })
   })
 }
 
 app.whenReady().then(() => {
   pruneCopies(HOME)
+  try {
+    statusScript = writeStatusScript(HOME)
+  } catch {
+    // read-only home: sessions still start, just without the status line (no usage bars)
+  }
   handle()
+  const icon = join(__dirname, '../../build/icon.png')
+  if (process.platform === 'darwin' && !app.isPackaged && existsSync(icon)) app.dock?.setIcon(icon) // dev only: a packaged app carries its .icns
   win = new BrowserWindow({
+    icon,
     width: 1280,
     height: 800,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1917' : '#faf8f5',
@@ -313,9 +359,18 @@ app.whenReady().then(() => {
   })
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadFile(join(__dirname, '../renderer/index.html'))
+  tracker = trackUsage(HOME, {
+    accounts: () => loadAccounts(HOME),
+    warnAt: () => loadPrefs(HOME).usage.warnAt,
+    emit: (u) => send('usage:update', u),
+    warn: (_a, text) => {
+      send('usage:warn', text) // always shown in-app; the system notification follows prefs
+      notify(text)
+    }
+  })
 })
 
-app.on('will-quit', () => void killAll())
+app.on('will-quit', () => (tracker?.stop(), void killAll()))
 
 app.on('window-all-closed', () => {
   app.quit()

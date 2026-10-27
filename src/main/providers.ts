@@ -5,10 +5,11 @@ export interface Provider {
   /** env var that points the CLI at an account's config dir */
   envVar: string
   /** `message` = initial prompt (separate argv element, never a shell string); ignored when `resumePrompt` is false */
-  resumeArgs(id: string, message?: string): string[]
+  resumeArgs(id: string, message?: string, extra?: string[]): string[]
   /** the CLI accepts a positional prompt together with the resume flag */
   resumePrompt: boolean
-  newArgs(id: string): string[]
+  /** `extra` = Relay's own flags (Claude `--settings`); they come before the positional prompt */
+  newArgs(id: string, extra?: string[]): string[]
   loginArgs: string[]
   /** false = never run against the real CLI */
   verified: boolean
@@ -39,9 +40,9 @@ export const providers: Record<ProviderId, Provider> = {
   claude: {
     bin: 'claude',
     envVar: 'CLAUDE_CONFIG_DIR',
-    resumeArgs: (id, message) => (message ? ['--resume', id, message] : ['--resume', id]),
+    resumeArgs: (id, message, extra = []) => ['--resume', id, ...extra, ...(message ? [message] : [])],
     resumePrompt: true,
-    newArgs: (id) => ['--session-id', id],
+    newArgs: (id, extra = []) => ['--session-id', id, ...extra],
     loginArgs: ['auth', 'login'],
     verified: true,
     assignsId: true,

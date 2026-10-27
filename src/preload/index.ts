@@ -21,6 +21,12 @@ const api: RelayApi = {
   shared: { set: (id, enabled) => ipcRenderer.invoke('shared:set', id, enabled), open: () => ipcRenderer.invoke('shared:open') },
   onShared: (cb) => sub('shared:notice', cb),
   sessions: (cwd) => ipcRenderer.invoke('sessions:list', cwd),
+  history: {
+    candidates: (cwd) => ipcRenderer.invoke('history:candidates', cwd),
+    adopt: (cwd, id) => ipcRenderer.invoke('history:adopt', cwd, id),
+    forget: (cwd, id) => ipcRenderer.invoke('history:forget', cwd, id)
+  },
+  usage: { get: () => ipcRenderer.invoke('usage:get'), onUpdate: (cb) => sub('usage:update', cb), onWarn: (cb) => sub('usage:warn', cb) },
   pty: {
     start: (req) => ipcRenderer.invoke('pty:start', req),
     kill: (id) => ipcRenderer.invoke('pty:kill', id),

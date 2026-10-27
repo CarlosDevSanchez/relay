@@ -3,7 +3,6 @@ import type { AccountStatus, ProviderId } from '../shared/types'
 export const statusLine = (s?: AccountStatus): string =>
   !s ? '…' : s.unchecked && s.loggedIn === null ? 'sin comprobar' : s.loggedIn === null ? 'estado desconocido' : s.loggedIn ? `${s.email ?? 'sesión iniciada'}${s.plan ? ` · ${s.plan}` : ''}` : 'sin sesión'
 
-export const CLAUDE_MISSING = 'Claude Code no está instalado: instálalo desde Configuración > CLI'
 export const NAMES: Record<ProviderId, string> = { claude: 'Claude Code', codex: 'Codex' }
 export const missingMsg = (p: ProviderId): string => `${NAMES[p]} no está instalado: instálalo desde Configuración > CLI`
 

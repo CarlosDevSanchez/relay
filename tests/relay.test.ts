@@ -442,8 +442,9 @@ describe('prefs', () => {
   it('defaults, merges only known booleans, tolerates garbage', () => {
     const h = tmp()
     const hd = { autoContinue: true, message: 'Continúa exactamente donde lo dejaste.' }
-    expect(loadPrefs(h)).toEqual({ notifications: { system: true, sound: true }, handoff: hd })
-    expect(savePrefs(h, { notifications: { sound: false, evil: 1, system: 'x' } })).toEqual({ notifications: { system: true, sound: false }, handoff: hd })
+    const ud = { statusLine: true, warnAt: 90 }
+    expect(loadPrefs(h)).toEqual({ notifications: { system: true, sound: true }, handoff: hd, usage: ud })
+    expect(savePrefs(h, { notifications: { sound: false, evil: 1, system: 'x' } })).toEqual({ notifications: { system: true, sound: false }, handoff: hd, usage: ud })
     expect(loadPrefs(h).notifications.sound).toBe(false)
     expect(savePrefs(h, null).notifications.sound).toBe(false)
     writeFileSync(join(h, 'prefs.json'), 'nope')

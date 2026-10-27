@@ -80,3 +80,10 @@ export function checkInstall(provider: unknown, claudeScriptOverride?: string): 
   return c
 }
 
+
+/** History requests: a known project and a real session id (the id must also be a listed transcript, checked by the caller). */
+export function checkSessionRef(cwd: unknown, sessionId: unknown, projects: string[]): { cwd: string; sessionId: string } {
+  if (typeof cwd !== 'string' || !projects.includes(cwd)) throw new Error('Unknown project')
+  if (!isSessionId(sessionId)) throw new Error('Invalid session id')
+  return { cwd, sessionId }
+}

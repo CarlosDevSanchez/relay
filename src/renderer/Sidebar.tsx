@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import type { Account, AccountStatus, ProviderId, SessionInfo } from '../shared/types'
+import { useEffect, useState } from 'react'
+import type { Account, AccountStatus, AccountUsage, ProviderId, SessionInfo } from '../shared/types'
+import { fmtReset, liveWindows, usageLevel, windowTitle } from '../shared/usage'
 import { NAMES, missingMsg } from './status'
-import { Dot, Dropdown, IconFolder, IconGear, IconKebab, IconLink, IconPlus, ago } from './ui'
+import { Dot, Logo, Dropdown, IconFolder, IconGear, IconKebab, IconLink, IconPlus, ago } from './ui'
 
 const base = (p: string) => p.split('/').filter(Boolean).pop() ?? p
 const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n))
@@ -13,6 +14,8 @@ export interface SidebarProps {
   projects: string[]
   cwd: string | null
   sessions: Record<string, SessionInfo[]>
+  usage: Record<string, AccountUsage>
+  warnAt: number
   /** the provider's CLI is not installed */
   missing(provider: ProviderId | undefined): boolean
   newSession(): void
@@ -21,6 +24,10 @@ export interface SidebarProps {
   addProject(): void
   addAccount(): void
   resume(p: string, s: SessionInfo): void
+  /** project menu: pick an existing transcript to add to Relay's history */
+  openExisting(p: string): void
+  /** session menu: remove it from Relay's history (transcript untouched) */
+  forget(p: string, s: SessionInfo): void
   rename(a: Account): void
   remove(a: Account): void
   login(a: Account): void
@@ -29,8 +36,29 @@ export interface SidebarProps {
   openSettings(): void
 }
 
+const BAR = { ok: 'progress-success', warning: 'progress-warning', error: 'progress-error' }
+
+function UsageBars({ u, warnAt, now }: { u: AccountUsage | undefined; warnAt: number; now: number }) {
+  return (
+    <div className="space-y-1.5 pt-1" data-testid="usage">
+      {liveWindows(u?.windows ?? [], now).map((w) => (
+        <div key={w.id} data-testid={`usage-${w.id}`}>
+          <div className="flex justify-between"><span>{windowTitle(w.id)}</span><b>{Math.round(w.pct)}%</b></div>
+          <progress className={`progress h-1.5 w-full ${BAR[usageLevel(w.pct, warnAt)]}`} value={w.pct} max={100} aria-label={`${windowTitle(w.id)} ${Math.round(w.pct)}%`} />
+          <div className="text-[11px] opacity-60">se reinicia {fmtReset(w.resetsAt, now)} · actualizado {ago(u!.updatedAt, now)}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function Sidebar(p: SidebarProps) {
   const [open, setOpen] = useState<Record<string, boolean>>({})
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000) // "actualizado hace X" and expired windows
+    return () => clearInterval(t)
+  }, [])
   const isOpen = (x: string) => open[x] ?? x === p.cwd
   const label = (id: string) => p.accounts.find((a) => a.id === id)?.label ?? id
   const prov = (id: string) => p.accounts.find((a) => a.id === id)?.provider
@@ -38,7 +66,7 @@ export function Sidebar(p: SidebarProps) {
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-base-300 bg-base-200">
       <div className="drag px-3 pb-3 pt-10">
-        <div className="mb-3 flex items-center gap-2 px-1 text-base font-semibold tracking-wide"><span className="status status-primary" aria-hidden="true" /> Relay</div>
+        <div className="mb-3 flex items-center gap-2 px-1 text-base font-semibold tracking-wide"><Logo size={22} /> Relay</div>
         <button className="btn btn-primary nodrag w-full" disabled={p.missing(activeProv)} title={p.missing(activeProv) ? missingMsg(activeProv!) : ''} onClick={p.newSession}>
           <IconPlus /> Nueva sesión
         </button>
@@ -90,6 +118,7 @@ export function Sidebar(p: SidebarProps) {
                       <div className="truncate opacity-70">{s.loggedIn === null ? 'estado desconocido' : s.loggedIn ? (s.email ?? 'sesión iniciada') : 'sin sesión'}</div>
                       {s.limited && <div className="text-warning">Limitada hasta {s.limited.resetText}</div>}
                       {a.provider === 'claude' && <div className="opacity-60">{fmt(s.tokens5h)} tokens / 5h</div>}
+                      <UsageBars u={p.usage[a.id]} warnAt={p.warnAt} now={now} />
                     </div>
                   )}
                   {a.drift && <div className="text-xs text-warning">Memoria compartida desincronizada; desactívala y vuelve a activarla.</div>}
@@ -110,16 +139,22 @@ export function Sidebar(p: SidebarProps) {
             <li key={x}>
               <details open={isOpen(x)}>
                 <summary title={x} className={x === p.cwd ? 'menu-active' : ''} onClick={(e) => (e.preventDefault(), setOpen((o) => ({ ...o, [x]: !isOpen(x) })), p.selectProject(x))}>
-                  <IconFolder /> <span className="truncate">{base(x)}</span>
+                  <IconFolder /> <span className="min-w-0 flex-1 truncate">{base(x)}</span>
+                  <span onClick={(e) => (e.preventDefault(), e.stopPropagation())}>
+                    <Dropdown title="Opciones de proyecto" trigger={<IconKebab />} btnClass="btn btn-ghost btn-xs btn-square" items={[{ label: 'Abrir sesión existente…', onClick: () => p.openExisting(x) }]} />
+                  </span>
                 </summary>
                 <ul>
                   {(p.sessions[x] ?? []).length === 0 && <li className="menu-disabled"><span className="text-xs">Sin sesiones</span></li>}
                   {(p.sessions[x] ?? []).map((s) => (
                     <li key={`${s.accountId}${s.id}`} className={p.missing(prov(s.accountId)) ? 'menu-disabled' : ''}>
-                      <button onClick={() => p.resume(x, s)} disabled={p.missing(prov(s.accountId))} className="flex-col items-start gap-0 text-left">
-                        <span className="w-full truncate text-xs font-medium">{s.title}</span>
-                        <span className="text-[11px] opacity-60">{label(s.accountId)} · {ago(s.mtimeMs)}</span>
-                      </button>
+                      <div className="flex items-center gap-0 p-0">
+                        <button onClick={() => p.resume(x, s)} disabled={p.missing(prov(s.accountId))} className="min-w-0 flex-1 flex-col items-start gap-0 px-3 py-1.5 text-left">
+                          <span className="w-full truncate text-xs font-medium">{s.title}</span>
+                          <span className="text-[11px] opacity-60">{label(s.accountId)} · {ago(s.mtimeMs)}{s.handoffs?.length ? ` · ↪ ${label(s.handoffs.at(-1)!.from)} → ${label(s.handoffs.at(-1)!.to)}` : ''}</span>
+                        </button>
+                        <Dropdown title="Opciones de sesión" trigger={<IconKebab />} btnClass="btn btn-ghost btn-xs btn-square" items={[{ label: 'Quitar del historial de Relay', onClick: () => p.forget(x, s), danger: true }]} />
+                      </div>
                     </li>
                   ))}
                 </ul>

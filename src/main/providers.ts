@@ -6,6 +6,7 @@ export interface Provider {
   envVar: string
   resumeArgs(id: string): string[]
   newArgs(id: string): string[]
+  loginArgs: string[]
   /** false = never run against the real CLI */
   verified: boolean
 }
@@ -16,6 +17,7 @@ export const providers: Record<ProviderId, Provider> = {
     envVar: 'CLAUDE_CONFIG_DIR',
     resumeArgs: (id) => ['--resume', id],
     newArgs: (id) => ['--session-id', id],
+    loginArgs: ['auth', 'login'],
     verified: true
   },
   // UNVERIFIED: Codex is not installed here; CODEX_HOME / `codex resume <id>` taken from the brief.
@@ -24,6 +26,7 @@ export const providers: Record<ProviderId, Provider> = {
     envVar: 'CODEX_HOME',
     resumeArgs: (id) => ['resume', id],
     newArgs: () => [],
+    loginArgs: ['login'],
     verified: false
   }
 }

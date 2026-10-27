@@ -5,7 +5,7 @@ Desktop app (macOS primary, Linux second) to run several AI coding CLI accounts 
 **ToS caveat:** using multiple accounts to get around usage limits may breach the provider's terms. Relay only spawns the official CLI binaries (`claude`, later `codex`); it never reads, extracts or forwards OAuth tokens and never calls provider APIs.
 
 ## How it works
-- Each account = its own config dir (`CLAUDE_CONFIG_DIR`, default `~/.relay/accounts/<id>`) with its own login. "login" opens a terminal running `claude` there; run `/login`. "Import dir" references an existing dir (e.g. `~/.claude-mailo`) by path; nothing is copied.
+- Each account = its own config dir (`CLAUDE_CONFIG_DIR`, default `~/.relay/accounts/<id>`) with its own login. "login" runs the official `claude auth login` in a terminal tab there. "Import dir" references an existing dir (e.g. `~/.claude-mailo`) by path; nothing is copied.
 - Sessions are read from `<configDir>/projects/<cwd with every non-alphanumeric char -> '-'>/<session-id>.jsonl`.
 - Click another account chip while a session is open: its JSONL is copied into the target account's project dir (never overwriting different content; an older prefix is extended by appending the tail), the pty is killed and `claude --resume <id>` starts under the target account.
 - Handoff order: kill the source `claude` and wait for it to exit (SIGKILL after 3 s; the CLI appends lines on exit), copy only complete lines (plus the sibling `<id>/` dir with subagents and tool-results), then start the target. A diverged target copy is renamed to `<id>.jsonl.relay-bak-<ts>`. Sessions copied to several accounts appear once in the sidebar (newest copy).
@@ -31,4 +31,4 @@ src/preload/   contextBridge exposing RelayApi (src/shared/types.ts)
 src/renderer/  React + Tailwind + xterm (contextIsolation, sandbox, no nodeIntegration)
 tests/         vitest
 ```
-One terminal at a time; starting another kills the previous process.
+Several terminals at once (tabs, one pty each, keyed by id); closing a tab kills only that process. Sidebar cards show `claude auth status --json` (email, plan) and, from local transcripts only, the active rate limit and tokens used in the last 5h (approximate: copied sessions count on both accounts). See docs/spikes/F0.md.

@@ -27,6 +27,10 @@ const regularFile = (p: string): boolean => {
   }
 }
 
+/** True when the source transcript is a regular file (checked before the source process is killed). */
+export const sourceExists = (from: Account, cwd: string, sessionId: string): boolean =>
+  isSessionId(sessionId) && regularFile(join(claudeProjectDir(from.configDir, cwd), `${sessionId}.jsonl`))
+
 /**
  * Copies a Claude session transcript (complete lines only) into the target account's projects dir,
  * plus the sibling `<id>/` dir (subagents, tool-results). file-history (/rewind) is not copied.

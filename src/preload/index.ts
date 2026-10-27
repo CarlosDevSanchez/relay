@@ -11,12 +11,16 @@ const api: RelayApi = {
   accounts: {
     list: () => ipcRenderer.invoke('accounts:list'),
     add: (label, provider, configDir) => ipcRenderer.invoke('accounts:add', label, provider, configDir),
-    pickDir: () => ipcRenderer.invoke('accounts:pickDir')
+    pickDir: () => ipcRenderer.invoke('accounts:pickDir'),
+    rename: (id, label) => ipcRenderer.invoke('accounts:rename', id, label),
+    remove: (id) => ipcRenderer.invoke('accounts:remove', id),
+    status: (id, refresh) => ipcRenderer.invoke('accounts:status', id, refresh)
   },
   projects: { list: () => ipcRenderer.invoke('projects:list'), add: () => ipcRenderer.invoke('projects:add') },
   sessions: (cwd) => ipcRenderer.invoke('sessions:list', cwd),
   pty: {
     start: (req) => ipcRenderer.invoke('pty:start', req),
+    kill: (id) => ipcRenderer.invoke('pty:kill', id),
     write: (id, d) => ipcRenderer.send('pty:write', id, d),
     resize: (id, c, r) => ipcRenderer.send('pty:resize', id, c, r),
     onData: (cb) => sub('pty:data', cb),

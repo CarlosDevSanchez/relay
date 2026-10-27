@@ -1,34 +1,33 @@
-import { useCallback, useEffect, useState } from 'react'
-import type { Account, SessionInfo } from '../shared/types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { Account, AccountStatus, SessionInfo } from '../shared/types'
 import { TerminalPane } from './Terminal'
 
 const base = (p: string) => p.split('/').filter(Boolean).pop() ?? p
 const btn = 'nodrag rounded px-2 py-1 text-xs border border-white/10 hover:bg-white/10'
+const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n))
+
+interface Tab {
+  ptyId: number
+  accountId: string
+  title: string
+  sessionId?: string
+  login?: boolean
+  exited?: boolean
+}
 
 export function App() {
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [statuses, setStatuses] = useState<Record<string, AccountStatus>>({})
   const [projects, setProjects] = useState<string[]>([])
   const [cwd, setCwd] = useState<string | null>(null)
   const [sessions, setSessions] = useState<SessionInfo[]>([])
-  const [active, setActive] = useState<string | null>(null) // active account id
-  const [term, setTerm] = useState<{ ptyId: number; sessionId?: string } | null>(null)
+  const [active, setActive] = useState<string | null>(null) // selected account id
+  const [tabs, setTabs] = useState<Tab[]>([])
+  const [cur, setCur] = useState<number | null>(null) // active tab ptyId
   const [error, setError] = useState('')
-
-  const refresh = useCallback(async (dir: string | null) => {
-    setAccounts(await window.relay.accounts.list())
-    if (dir) setSessions(await window.relay.sessions(dir))
-  }, [])
-
-  useEffect(() => {
-    void window.relay.projects.list().then(setProjects)
-    void refresh(null)
-  }, [refresh])
-  useEffect(() => {
-    if (!active && accounts[0]) setActive(accounts[0].id)
-  }, [accounts, active])
-  useEffect(() => {
-    if (cwd) void window.relay.sessions(cwd).then(setSessions)
-  }, [cwd])
+  const tab = tabs.find((t) => t.ptyId === cur)
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
 
   const run = async (fn: () => Promise<unknown>) => {
     setError('')
@@ -39,11 +38,68 @@ export function App() {
     }
   }
 
-  const start = (mode: 'new' | 'resume' | 'login', accountId: string, sessionId?: string) =>
+  const loadStatus = useCallback(
+    (id: string, refresh = false) =>
+      window.relay.accounts
+        .status(id, refresh)
+        .then((s) => setStatuses((m) => ({ ...m, [id]: s })))
+        .catch(() => setStatuses((m) => ({ ...m, [id]: { accountId: id, loggedIn: null, tokens5h: 0 } }))),
+    []
+  )
+
+  const refresh = useCallback(async (dir: string | null) => {
+    const list = await window.relay.accounts.list()
+    setAccounts(list)
+    if (dir) setSessions(await window.relay.sessions(dir))
+    return list
+  }, [])
+
+  useEffect(() => {
+    void window.relay.projects.list().then(setProjects)
+    void refresh(null).then((l) => l.forEach((a) => void loadStatus(a.id)))
+  }, [refresh, loadStatus])
+  useEffect(() => {
+    if (!active && accounts[0]) setActive(accounts[0].id)
+  }, [accounts, active])
+  useEffect(() => {
+    if (cwd) void window.relay.sessions(cwd).then(setSessions)
+  }, [cwd])
+  // a finished login changes the account's auth status
+  useEffect(
+    () =>
+      window.relay.pty.onExit((id) => {
+        setTabs((ts) => ts.map((t) => (t.ptyId === id ? { ...t, exited: true } : t)))
+        const t = tabsRef.current.find((x) => x.ptyId === id)
+        if (t?.login) void loadStatus(t.accountId, true)
+      }),
+    [loadStatus]
+  )
+
+  const open = (t: Tab, replace?: number) => {
+    setTabs((ts) => (replace === undefined ? [...ts, t] : ts.map((x) => (x.ptyId === replace ? t : x))))
+    setCur(t.ptyId)
+  }
+
+  const start = (mode: 'new' | 'resume' | 'login', accountId: string, s?: SessionInfo) =>
     run(async () => {
       if (!cwd && mode !== 'login') throw new Error('Pick a project first')
       setActive(accountId)
-      setTerm(await window.relay.pty.start({ accountId, cwd: cwd ?? '', mode, ...(sessionId ? { sessionId } : {}) }))
+      const r = await window.relay.pty.start({ accountId, cwd: cwd ?? '', mode, ...(s ? { sessionId: s.id } : {}) })
+      const label = accounts.find((a) => a.id === accountId)?.label ?? accountId
+      open({
+        ptyId: r.ptyId,
+        accountId,
+        ...(r.sessionId ? { sessionId: r.sessionId } : {}),
+        ...(mode === 'login' ? { login: true } : {}),
+        title: mode === 'login' ? `login · ${label}` : (s?.title ?? 'new session').slice(0, 24)
+      })
+    })
+
+  const closeTab = (t: Tab) =>
+    run(async () => {
+      await window.relay.pty.kill(t.ptyId)
+      setTabs((ts) => ts.filter((x) => x.ptyId !== t.ptyId))
+      setCur((c) => (c === t.ptyId ? (tabsRef.current.filter((x) => x.ptyId !== t.ptyId).at(-1)?.ptyId ?? null) : c))
     })
 
   const addAccount = (imp: boolean) =>
@@ -52,23 +108,69 @@ export function App() {
       if (!label) return
       const dir = imp ? await window.relay.accounts.pickDir() : undefined
       if (imp && !dir) return
-      await window.relay.accounts.add(label, 'claude', dir ?? undefined)
+      const a = await window.relay.accounts.add(label, 'claude', dir ?? undefined)
+      await refresh(cwd)
+      void loadStatus(a.id)
+    })
+
+  const rename = (a: Account) =>
+    run(async () => {
+      const label = prompt('New label', a.label)
+      if (label) setAccounts(await window.relay.accounts.rename(a.id, label))
+    })
+
+  const remove = (a: Account) =>
+    run(async () => {
+      const msg = a.managed
+        ? `Delete account "${a.label}" and its config dir ${a.configDir}? This logs it out and removes its sessions.`
+        : `Remove "${a.label}" from Relay? Its directory ${a.configDir} is left untouched.`
+      if (!confirm(msg)) return
+      setAccounts(await window.relay.accounts.remove(a.id))
+      setTabs((ts) => ts.filter((t) => t.accountId !== a.id))
+      if (tab?.accountId === a.id) setCur(null)
+      if (active === a.id) setActive(null)
       await refresh(cwd)
     })
 
   const handoff = (to: Account) =>
     run(async () => {
-      if (!cwd || !active || !term?.sessionId) throw new Error('Open a Claude session first')
-      if (to.id === active) return
-      setTerm(await window.relay.handoff({ fromAccountId: active, toAccountId: to.id, cwd, sessionId: term.sessionId }))
+      if (!cwd || !tab?.sessionId) throw new Error('Open a Claude session first')
+      if (to.id === tab.accountId) return
+      if (!confirm(`Continue this session on "${to.label}"? The current process will be stopped.`)) return
+      const r = await window.relay.handoff({ ptyId: tab.ptyId, fromAccountId: tab.accountId, toAccountId: to.id, cwd, sessionId: tab.sessionId })
+      open({ ptyId: r.ptyId, accountId: to.id, title: tab.title, ...(r.sessionId ? { sessionId: r.sessionId } : {}) }, tab.ptyId)
       setActive(to.id)
       await refresh(cwd)
+      void loadStatus(to.id, true)
+      void loadStatus(tab.accountId, true)
     })
 
   return (
     <div className="flex h-full">
       <aside className="flex w-64 shrink-0 flex-col border-r border-white/10 bg-[#262624] pt-10">
-        <div className="flex items-center justify-between px-3 pb-2 text-xs uppercase text-white/50">
+        <div className="space-y-2 border-b border-white/10 px-3 pb-3">
+          {accounts.map((a) => {
+            const s = statuses[a.id]
+            return (
+              <div key={a.id} className="rounded border border-white/10 bg-white/[0.03] p-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <b className="truncate text-white/90">{a.label}</b>
+                  <span className="shrink-0 text-white/40">
+                    <button title="Refresh" onClick={() => loadStatus(a.id, true)}>↻</button>{' '}
+                    <button title="Rename" onClick={() => rename(a)}>✎</button>{' '}
+                    <button title="Remove" onClick={() => remove(a)}>✕</button>
+                  </span>
+                </div>
+                <div className="truncate text-white/50">
+                  {!s ? '…' : s.loggedIn === null ? 'status unknown' : s.loggedIn ? `${s.email ?? 'logged in'}${s.plan ? ` · ${s.plan}` : ''}` : 'not logged in'}
+                </div>
+                {s?.limited && <div className="text-red-400">Limitada hasta {s.limited.resetText}</div>}
+                {s && <div className="text-white/40">{fmt(s.tokens5h)} tokens / 5h (local)</div>}
+              </div>
+            )
+          })}
+        </div>
+        <div className="flex items-center justify-between px-3 py-2 text-xs uppercase text-white/50">
           Projects
           <button className={btn} onClick={() => run(async () => setProjects(await window.relay.projects.add()))}>
             + Add
@@ -92,7 +194,7 @@ export function App() {
                   {sessions.map((s) => (
                     <button
                       key={`${s.accountId}${s.id}`}
-                      onClick={() => start('resume', s.accountId, s.id)}
+                      onClick={() => start('resume', s.accountId, s)}
                       className="block w-full px-2 py-1 text-left text-xs text-white/70 hover:bg-white/5"
                     >
                       <div className="truncate">{s.title}</div>
@@ -112,13 +214,13 @@ export function App() {
           {accounts.map((a) => (
             <span key={a.id} className="nodrag flex items-center gap-1">
               <button
-                onClick={() => (term?.sessionId ? handoff(a) : setActive(a.id))}
-                title={term?.sessionId ? 'Continue this session on this account' : 'Select account'}
-                className={`rounded-full px-3 py-1 text-xs ${a.id === active ? 'bg-[#d97757] text-black' : 'border border-white/20 text-white/70 hover:bg-white/10'}`}
+                onClick={() => (tab?.sessionId ? handoff(a) : setActive(a.id))}
+                title={tab?.sessionId ? 'Continue this session on this account' : 'Select account'}
+                className={`rounded-full px-3 py-1 text-xs ${a.id === (tab?.accountId ?? active) ? 'bg-[#d97757] text-black' : 'border border-white/20 text-white/70 hover:bg-white/10'}`}
               >
                 {a.label}
               </button>
-              <button className="text-xs text-white/40 hover:text-white" title="Login (runs claude, use /login)" onClick={() => start('login', a.id)}>
+              <button className="text-xs text-white/40 hover:text-white" title="Login (claude auth login)" onClick={() => start('login', a.id)}>
                 login
               </button>
             </span>
@@ -127,8 +229,19 @@ export function App() {
           <button className={btn} onClick={() => addAccount(true)}>Import dir</button>
           {error && <span className="ml-2 truncate text-xs text-red-400">{error}</span>}
         </header>
+        <div className="flex border-b border-white/10 text-xs">
+          {tabs.map((t) => (
+            <div key={t.ptyId} className={`flex items-center gap-2 border-r border-white/10 px-3 py-1.5 ${t.ptyId === cur ? 'bg-white/10 text-white' : 'text-white/50 hover:bg-white/5'}`}>
+              <button onClick={() => setCur(t.ptyId)} className={t.exited ? 'line-through' : ''}>{t.title}</button>
+              <button title="Close" onClick={() => closeTab(t)}>✕</button>
+            </div>
+          ))}
+        </div>
         <div className="min-h-0 flex-1">
-          {term ? <TerminalPane key={term.ptyId} ptyId={term.ptyId} /> : <p className="p-6 text-sm text-white/40">Add an account, pick a project, start or resume a session. Click another account chip to continue the open session there.</p>}
+          {tabs.map((t) => (
+            <TerminalPane key={t.ptyId} ptyId={t.ptyId} visible={t.ptyId === cur} />
+          ))}
+          {!tab && <p className="p-6 text-sm text-white/40">Add an account, pick a project, start or resume a session. Click another account chip to continue the open session there.</p>}
         </div>
       </main>
     </div>

@@ -2,8 +2,8 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
 
-/** Mount once per pty (parent keys it by ptyId). */
-export function TerminalPane({ ptyId }: { ptyId: number }) {
+/** Mount once per pty (parent keys it by ptyId); hidden, never unmounted, when its tab is inactive. */
+export function TerminalPane({ ptyId, visible }: { ptyId: number; visible: boolean }) {
   const el = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const term = new Terminal({ fontSize: 13, theme: { background: '#1f1e1d' }, cursorBlink: true })
@@ -11,6 +11,7 @@ export function TerminalPane({ ptyId }: { ptyId: number }) {
     term.loadAddon(fit)
     term.open(el.current!)
     const sync = () => {
+      if (!el.current?.clientWidth) return // hidden tab
       fit.fit()
       window.relay.pty.resize(ptyId, term.cols, term.rows)
     }
@@ -29,5 +30,5 @@ export function TerminalPane({ ptyId }: { ptyId: number }) {
       term.dispose()
     }
   }, [ptyId])
-  return <div ref={el} className="h-full w-full p-2" />
+  return <div ref={el} className={`h-full w-full p-2 ${visible ? '' : 'hidden'}`} />
 }

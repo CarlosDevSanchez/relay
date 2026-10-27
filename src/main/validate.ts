@@ -1,3 +1,4 @@
+import { join, resolve, sep } from 'node:path'
 import type { Account, HandoffRequest, StartRequest } from '../shared/types'
 import { providers } from './providers'
 
@@ -8,10 +9,25 @@ const str = (v: unknown, what: string): string => {
   return v
 }
 
-export function checkNewAccount(label: unknown, provider: unknown, configDir: unknown): void {
+export function checkAccountId(id: unknown, accounts: Account[]): Account {
+  const a = accounts.find((x) => x.id === id)
+  if (!a) throw new Error('Unknown account')
+  return a
+}
+
+export function checkRename(id: unknown, label: unknown, accounts: Account[]): string {
+  checkAccountId(id, accounts)
+  return str(label, 'label')
+}
+
+export function checkNewAccount(label: unknown, provider: unknown, configDir: unknown, home?: string): void {
   str(label, 'label')
   if (typeof provider !== 'string' || !Object.hasOwn(providers, provider)) throw new Error('Invalid provider')
-  if (configDir !== undefined) str(configDir, 'configDir')
+  if (configDir !== undefined) {
+    const dir = resolve(str(configDir, 'configDir'))
+    const managed = home && join(resolve(home), 'accounts')
+    if (managed && (dir === managed || dir.startsWith(managed + sep))) throw new Error('configDir must not be inside Relay managed accounts')
+  }
 }
 
 /** Trust boundary: renderer input is untrusted (traversal, argv injection via session id, arbitrary cwd). */
@@ -26,6 +42,7 @@ export function checkStart(req: StartRequest, accounts: Account[], projects: str
 }
 
 export function checkHandoff(req: HandoffRequest, accounts: Account[], projects: string[]): [Account, Account] {
+  if (!Number.isInteger(req?.ptyId)) throw new Error('Invalid pty id')
   const from = checkStart({ accountId: req?.fromAccountId, cwd: req?.cwd, mode: 'resume', sessionId: req?.sessionId }, accounts, projects)
   const to = checkStart({ accountId: req.toAccountId, cwd: req.cwd, mode: 'resume', sessionId: req.sessionId }, accounts, projects)
   return [from, to]

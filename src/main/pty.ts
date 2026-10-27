@@ -1,8 +1,12 @@
 import * as pty from 'node-pty'
 import { terminate } from './handoff'
 
-// ponytail: one terminal at a time; callers `await killPty()` before spawning another.
-let current: { id: number; proc: pty.IPty; exited: Promise<void> } | null = null
+interface Entry {
+  proc: pty.IPty
+  accountId: string
+  exited: Promise<void>
+}
+const ptys = new Map<number, Entry>()
 let nextId = 1
 
 export function spawnPty(
@@ -10,6 +14,7 @@ export function spawnPty(
   args: string[],
   cwd: string,
   env: Record<string, string>,
+  accountId: string,
   onData: (id: number, d: string) => void,
   onExit: (id: number, code: number) => void
 ): number {
@@ -18,20 +23,27 @@ export function spawnPty(
   proc.onData((d) => onData(id, d))
   const exited = new Promise<void>((res) =>
     proc.onExit(({ exitCode }) => {
+      ptys.delete(id)
       onExit(id, exitCode)
       res()
     })
   )
-  current = { id, proc, exited }
+  ptys.set(id, { proc, accountId, exited })
   return id
 }
 
-export const writePty = (id: number, d: string): void => void (current?.id === id && current.proc.write(d))
-export const resizePty = (id: number, c: number, r: number): void => void (current?.id === id && current.proc.resize(c, r))
+export const writePty = (id: number, d: string): void => ptys.get(id)?.proc.write(d)
+export const resizePty = (id: number, c: number, r: number): void => ptys.get(id)?.proc.resize(c, r)
 
-/** Resolves once the process has really exited (SIGKILL after 3s). */
-export function killPty(): Promise<void> {
-  const c = current
-  current = null
-  return c ? terminate((sig) => c.proc.kill(sig), c.exited) : Promise.resolve()
+/** Kills only this pty; resolves once it has really exited (SIGKILL after 3s). */
+export function killPty(id: number): Promise<void> {
+  const e = ptys.get(id)
+  return e ? terminate((sig) => e.proc.kill(sig), e.exited) : Promise.resolve()
 }
+
+export const killAll = (): Promise<void[]> => Promise.all([...ptys.keys()].map(killPty))
+export const killAccountPtys = (accountId: string): Promise<void[]> =>
+  Promise.all([...ptys].filter(([, e]) => e.accountId === accountId).map(([id]) => killPty(id)))
+
+/** Owner account of a live pty (undefined once exited). */
+export const ptyAccount = (id: number): string | undefined => ptys.get(id)?.accountId

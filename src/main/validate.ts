@@ -1,8 +1,19 @@
-import { join, resolve, sep } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import type { Account, HandoffRequest, StartRequest } from '../shared/types'
 import { providers } from './providers'
 
 export const isSessionId = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f-]{36}$/i.test(s)
+
+/** realpath of the deepest existing ancestor + the rest (the path itself may not exist yet). */
+const real = (p: string): string => {
+  const abs = resolve(p)
+  try {
+    return realpathSync(abs)
+  } catch {
+    return abs === dirname(abs) ? abs : join(real(dirname(abs)), basename(abs))
+  }
+}
 
 const str = (v: unknown, what: string): string => {
   if (typeof v !== 'string' || !v) throw new Error(`Invalid ${what}`)
@@ -24,8 +35,8 @@ export function checkNewAccount(label: unknown, provider: unknown, configDir: un
   str(label, 'label')
   if (typeof provider !== 'string' || !Object.hasOwn(providers, provider)) throw new Error('Invalid provider')
   if (configDir !== undefined) {
-    const dir = resolve(str(configDir, 'configDir'))
-    const managed = home && join(resolve(home), 'accounts')
+    const dir = real(str(configDir, 'configDir'))
+    const managed = home && real(join(home, 'accounts'))
     if (managed && (dir === managed || dir.startsWith(managed + sep))) throw new Error('configDir must not be inside Relay managed accounts')
   }
 }

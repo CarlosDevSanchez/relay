@@ -1,5 +1,5 @@
 import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import type { Account } from '../shared/types'
 import { claudeProjectDir } from './paths'
 import { isSessionId } from './validate'
@@ -37,7 +37,18 @@ export const sourceExists = (from: Account, cwd: string, sessionId: string): boo
  * Target is never overwritten: identical/newer is kept, an older prefix is extended by its tail,
  * a diverged copy is renamed to `<id>.jsonl.relay-bak-<ts>` first.
  */
-export function copySessionForHandoff(from: Account, to: Account, cwd: string, sessionId: string, now = Date.now): string {
+export interface CopyResult {
+  dst: string
+  /** byte range [from, to) of the target transcript that came from the source */
+  from: number
+  to: number
+  /** the target transcript was replaced (older ranges are void) */
+  replaced: boolean
+  /** files of the sibling dir newly created in the target, relative to the project dir */
+  sib: string[]
+}
+
+export function copySessionForHandoff(from: Account, to: Account, cwd: string, sessionId: string, now = Date.now): CopyResult {
   if (from.provider !== 'claude' || to.provider !== 'claude') {
     throw new Error('Handoff is only verified for Claude accounts')
   }
@@ -53,22 +64,36 @@ export function copySessionForHandoff(from: Account, to: Account, cwd: string, s
   const dstDir = claudeProjectDir(to.configDir, cwd)
   const dst = join(dstDir, `${sessionId}.jsonl`)
   mkdirSync(dstDir, { recursive: true })
+  const r: CopyResult = { dst, from: 0, to: a.length, replaced: false, sib: [] }
   if (lstatExists(dst)) {
     if (!regularFile(dst)) throw new Error('Target transcript is not a regular file; refusing to touch it')
     const b = readFileSync(dst)
-    if (b.length >= a.length && b.subarray(0, a.length).equals(a)) return dst // same or newer
-    if (a.subarray(0, b.length).equals(b)) appendFileSync(dst, a.subarray(b.length))
-    else {
+    if (b.length >= a.length && b.subarray(0, a.length).equals(a)) r.from = r.to = b.length // same or newer: nothing appended
+    else if (a.subarray(0, b.length).equals(b)) {
+      appendFileSync(dst, a.subarray(b.length))
+      r.from = b.length
+    } else {
       renameSync(dst, `${dst}.relay-bak-${now()}`)
       writeFileSync(dst, a, { flag: 'wx' })
+      r.replaced = true
     }
   } else writeFileSync(dst, a, { flag: 'wx' })
 
   const sib = join(srcDir, sessionId)
   if (existsSync(sib) && lstatSync(sib).isDirectory()) {
-    cpSync(sib, join(dstDir, sessionId), { recursive: true, force: false, filter: (s) => !lstatSync(s).isSymbolicLink() })
+    const out = join(dstDir, sessionId)
+    cpSync(sib, out, {
+      recursive: true,
+      force: false,
+      filter: (s) => {
+        if (lstatSync(s).isSymbolicLink()) return false
+        const d = join(out, relative(sib, s))
+        if (regularFile(s) && !lstatExists(d)) r.sib.push(join(sessionId, relative(sib, s)))
+        return true
+      }
+    })
   }
-  return dst
+  return r
 }
 
 function lstatExists(p: string): boolean {

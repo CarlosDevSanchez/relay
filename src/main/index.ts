@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { BrowserWindow, app, dialog, ipcMain } from 'electron'
+import { BrowserWindow, Notification, app, dialog, ipcMain } from 'electron'
 import type { Account, HandoffRequest, StartRequest, StartResult } from '../shared/types'
 import { buildEnv } from './env'
 import { copySessionForHandoff, runHandoff, sourceExists } from './handoff'
-import { killAccountPtys, killAll, killPty, ptyAccount, resizePty, spawnPty, writePty } from './pty'
+import { killAccountPtys, killAll, killPty, ptyInfo, resizePty, spawnPty, writePty } from './pty'
 import { providers } from './providers'
+import { type LimitInfo, scheduleAt, watchLimits } from './limit'
+import { claudeProjectDir } from './paths'
+import { loadPrefs, savePrefs } from './prefs'
 import { listSessions } from './sessions'
 import { accountStatus } from './usage'
 import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, recordCopy, removeAccount, renameAccount } from './store'
@@ -19,6 +22,27 @@ const list = (): Account[] => loadAccounts(HOME).map((a) => ({ ...a, managed: is
 
 const send = (ch: string, ...a: unknown[]): void => {
   if (!win.isDestroyed()) win.webContents.send(ch, ...a)
+}
+
+const watchers = new Map<number, { stop(): void }>()
+const reminders = new Map<string, () => void>()
+
+function notify(title: string, onClick?: () => void): void {
+  const prefs = loadPrefs(HOME).notifications
+  if (!prefs.system || !Notification.isSupported()) return
+  const n = new Notification({ title, silent: !prefs.sound })
+  n.on('click', () => {
+    if (win.isDestroyed()) return
+    win.show()
+    win.focus()
+    onClick?.()
+  })
+  n.show()
+}
+
+function onLimit(ptyId: number, a: Account, sessionId: string, h: LimitInfo): void {
+  notify(`${a.label} llegó a su límite · se reinicia ${h.resetText}`, () => send('tab:focus', ptyId))
+  send('limit:hit', { ptyId, accountId: a.id, sessionId, ...h })
 }
 
 async function start(req: StartRequest): Promise<StartResult> {
@@ -44,9 +68,19 @@ async function start(req: StartRequest): Promise<StartResult> {
     dir,
     buildEnv(a),
     a.id,
+    sid,
     (id, d) => send('pty:data', id, d),
-    (id, code) => send('pty:exit', id, code)
+    (id, code) => {
+      watchers.get(id)?.stop()
+      watchers.delete(id)
+      send('pty:exit', id, code)
+    }
   )
+  // live quota detection: tail this session's transcript from its current end
+  if (sid && a.provider === 'claude') {
+    const w = watchLimits(join(claudeProjectDir(a.configDir, dir), `${sid}.jsonl`), (h) => onLimit(ptyId, a, sid, h))
+    watchers.set(ptyId, w)
+  }
   return { ptyId, ...(sid ? { sessionId: sid } : {}) }
 }
 
@@ -85,19 +119,27 @@ function handle(): void {
     loadProjects(HOME).includes(cwd) ? listSessions(loadAccounts(HOME), cwd) : []
   )
   ipcMain.handle('pty:start', (_e, req: StartRequest) => start(req))
+  ipcMain.handle('prefs:get', () => loadPrefs(HOME))
+  ipcMain.handle('prefs:set', (_e, patch) => savePrefs(HOME, patch))
+  ipcMain.handle('limit:remind', (_e, accountId: string, resetAt: number) => {
+    const a = checkAccountId(accountId, loadAccounts(HOME))
+    if (typeof resetAt !== 'number') throw new Error('Invalid resetAt')
+    reminders.get(a.id)?.()
+    reminders.set(a.id, scheduleAt(resetAt, () => notify(`${a.label} ya tiene cuota disponible`)))
+  })
   ipcMain.handle('pty:kill', (_e, id: number) => killPty(id))
   ipcMain.on('pty:write', (_e, id: number, d: string) => writePty(id, d))
   ipcMain.on('pty:resize', (_e, id: number, c: number, r: number) => resizePty(id, c, r))
   ipcMain.handle('handoff', (_e, req: HandoffRequest) => {
     const [from, to] = checkHandoff(req, loadAccounts(HOME), loadProjects(HOME))
-    const owner = ptyAccount(req.ptyId)
-    if (owner !== undefined && owner !== from.id) throw new Error('pty does not belong to the source account')
+    const owner = ptyInfo(req.ptyId) // undefined = already exited (killing it is a no-op)
+    if (owner && (owner.accountId !== from.id || owner.sessionId !== req.sessionId)) throw new Error('pty does not belong to the source account and session')
     if (!sourceExists(from, req.cwd, req.sessionId)) throw new Error('Session has no transcript yet (send a first message before switching)')
     return runHandoff(
       () => killPty(req.ptyId),
       () => {
-        copySessionForHandoff(from, to, req.cwd, req.sessionId)
-        recordCopy(HOME, to.id, req.sessionId)
+        const r = copySessionForHandoff(from, to, req.cwd, req.sessionId)
+        recordCopy(HOME, to.id, req.sessionId, r)
       },
       () => start({ accountId: to.id, cwd: req.cwd, mode: 'resume', sessionId: req.sessionId })
     )

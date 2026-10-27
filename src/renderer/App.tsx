@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Account, AccountStatus, SessionInfo } from '../shared/types'
+import type { Account, AccountStatus, LimitHit, SessionInfo } from '../shared/types'
 import { TerminalPane } from './Terminal'
 
 const base = (p: string) => p.split('/').filter(Boolean).pop() ?? p
@@ -13,6 +13,7 @@ interface Tab {
   sessionId?: string
   login?: boolean
   exited?: boolean
+  hint?: string
 }
 
 export function App() {
@@ -25,9 +26,12 @@ export function App() {
   const [tabs, setTabs] = useState<Tab[]>([])
   const [cur, setCur] = useState<number | null>(null) // active tab ptyId
   const [error, setError] = useState('')
+  const [hit, setHit] = useState<LimitHit | null>(null)
   const tab = tabs.find((t) => t.ptyId === cur)
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
+  const accountsRef = useRef(accounts)
+  accountsRef.current = accounts
 
   const run = async (fn: () => Promise<unknown>) => {
     setError('')
@@ -74,6 +78,16 @@ export function App() {
       }),
     [loadStatus]
   )
+
+  // quota hit on a live session: ask the user (never switch by itself)
+  useEffect(() => {
+    const offHit = window.relay.onLimit((h) => {
+      setHit(h)
+      accountsRef.current.forEach((a) => void loadStatus(a.id, true))
+    })
+    const offFocus = window.relay.onFocusTab((id) => setCur(id))
+    return () => (offHit(), offFocus())
+  }, [loadStatus])
 
   const open = (t: Tab, replace?: number) => {
     setTabs((ts) => (replace === undefined ? [...ts, t] : ts.map((x) => (x.ptyId === replace ? t : x))))
@@ -132,17 +146,25 @@ export function App() {
       await refresh(cwd)
     })
 
-  const handoff = (to: Account) =>
+  // `ask`: the chip click needs a confirm(); the limit modal button is itself the confirmation
+  const handoff = (to: Account, t: Tab | undefined = tab, ask = true) =>
     run(async () => {
-      if (!cwd || !tab?.sessionId) throw new Error('Open a Claude session first')
-      if (to.id === tab.accountId) return
-      if (!confirm(`Continue this session on "${to.label}"? The current process will be stopped.`)) return
-      const r = await window.relay.handoff({ ptyId: tab.ptyId, fromAccountId: tab.accountId, toAccountId: to.id, cwd, sessionId: tab.sessionId })
-      open({ ptyId: r.ptyId, accountId: to.id, title: tab.title, ...(r.sessionId ? { sessionId: r.sessionId } : {}) }, tab.ptyId)
+      if (!cwd || !t?.sessionId) throw new Error('Open a Claude session first')
+      if (to.id === t.accountId) return
+      if (ask && !confirm(`Continue this session on "${to.label}"? The current process will be stopped.`)) return
+      const r = await window.relay.handoff({ ptyId: t.ptyId, fromAccountId: t.accountId, toAccountId: to.id, cwd, sessionId: t.sessionId })
+      // nothing is typed into the new session
+      open({ ptyId: r.ptyId, accountId: to.id, title: t.title, hint: `Sesión continuada en ${to.label}. Escribe "continúa" para seguir.`, ...(r.sessionId ? { sessionId: r.sessionId } : {}) }, t.ptyId)
       setActive(to.id)
       await refresh(cwd)
       void loadStatus(to.id, true)
-      void loadStatus(tab.accountId, true)
+      void loadStatus(t.accountId, true)
+    })
+
+  const wait = () =>
+    run(async () => {
+      if (hit?.resetAt) await window.relay.remindReset(hit.accountId, hit.resetAt)
+      setHit(null)
     })
 
   return (
@@ -237,6 +259,12 @@ export function App() {
             </div>
           ))}
         </div>
+        {tab?.hint && (
+          <div className="flex justify-between border-b border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
+            {tab.hint}
+            <button onClick={() => setTabs((ts) => ts.map((x) => (x.ptyId === tab.ptyId ? { ...x, hint: '' } : x)))}>✕</button>
+          </div>
+        )}
         <div className="min-h-0 flex-1">
           {tabs.map((t) => (
             <TerminalPane key={t.ptyId} ptyId={t.ptyId} visible={t.ptyId === cur} />
@@ -244,6 +272,43 @@ export function App() {
           {!tab && <p className="p-6 text-sm text-white/40">Add an account, pick a project, start or resume a session. Click another account chip to continue the open session there.</p>}
         </div>
       </main>
+      {hit && (
+        <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/60">
+          <div className="w-96 rounded border border-white/10 bg-[#262624] p-4 text-sm">
+            <b>{accounts.find((a) => a.id === hit.accountId)?.label} llegó a su límite ({hit.kind})</b>
+            <p className="mb-3 text-xs text-white/50">Se reinicia {hit.resetText}. Relay no cambia de cuenta por sí solo.</p>
+            <div className="space-y-1">
+              {accounts
+                .filter((a) => a.id !== hit.accountId && a.provider === accounts.find((x) => x.id === hit.accountId)?.provider)
+                .map((a) => {
+                  const s = statuses[a.id]
+                  const off = s?.loggedIn !== true || !!s.limited
+                  return (
+                    <button
+                      key={a.id}
+                      disabled={off}
+                      onClick={() => {
+                        const t = tabs.find((x) => x.ptyId === hit.ptyId)
+                        setHit(null)
+                        void handoff(a, t, false)
+                      }}
+                      className="block w-full rounded border border-white/10 px-3 py-2 text-left enabled:hover:bg-white/10 disabled:opacity-40"
+                    >
+                      Continuar en {a.label}
+                      <span className="block text-xs text-white/50">
+                        {!s ? '…' : s.loggedIn !== true ? 'sin sesión' : s.limited ? `limitada hasta ${s.limited.resetText}` : 'disponible'}
+                      </span>
+                    </button>
+                  )
+                })}
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <button className={btn} onClick={wait}>Esperar al reinicio</button>
+              <button className={btn} onClick={() => setHit(null)}>Cerrar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

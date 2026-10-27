@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { Account, ProviderId } from '../shared/types'
+import type { CopyResult } from './handoff'
 import { encodeCwd } from './paths'
 
 function readJson<T>(file: string, fallback: T): T {
@@ -65,10 +66,24 @@ export async function removeAccount(home: string, id: string, onUnlinked?: () =>
   return rest
 }
 
-/** Sessions copied INTO an account: {accountId: {sessionId: copiedAt}}; their older lines are not that account's usage. */
-export const loadCopies = (home: string): Record<string, Record<string, number>> => readJson(join(home, 'copies.json'), {})
+export interface CopyRecord {
+  /** byte ranges [from, to) of `<sid>.jsonl` that were copied in from another account */
+  ranges: [number, number][]
+  /** sibling-dir files (relative to the project dir) that were copied in */
+  sib: string[]
+}
 
-export function recordCopy(home: string, accountId: string, sessionId: string, at = Date.now()): void {
+/** Sessions copied INTO an account: {accountId: {sessionId: CopyRecord}}; those lines are not that account's usage. */
+export const loadCopies = (home: string): Record<string, Record<string, CopyRecord>> => readJson(join(home, 'copies.json'), {})
+
+/** No-op when nothing was appended. A replaced transcript voids the older ranges. */
+export function recordCopy(home: string, accountId: string, sessionId: string, r: Pick<CopyResult, 'from' | 'to' | 'replaced' | 'sib'>): void {
+  if (r.from === r.to && !r.sib.length) return
   const all = loadCopies(home)
-  writeJson(join(home, 'copies.json'), { ...all, [accountId]: { ...all[accountId], [sessionId]: at } })
+  const old = all[accountId]?.[sessionId]
+  const rec: CopyRecord = {
+    ranges: [...(r.replaced ? [] : (old?.ranges ?? [])), ...(r.from < r.to ? [[r.from, r.to] as [number, number]] : [])],
+    sib: [...new Set([...(old?.sib ?? []), ...r.sib])]
+  }
+  writeJson(join(home, 'copies.json'), { ...all, [accountId]: { ...all[accountId], [sessionId]: rec } })
 }

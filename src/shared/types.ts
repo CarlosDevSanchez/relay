@@ -44,8 +44,21 @@ export interface AccountStatus {
   email?: string
   plan?: string
   /** set when the latest rate_limit line is newer than any later successful assistant line */
-  limited?: { kind: string; resetText: string }
+  limited?: { kind: string; resetText: string; resetAt: number | null }
   tokens5h: number
+}
+
+export interface LimitHit {
+  ptyId: number
+  accountId: string
+  sessionId: string
+  kind: string
+  resetText: string
+  resetAt: number | null
+}
+
+export interface Prefs {
+  notifications: { system: boolean; sound: boolean }
 }
 
 export interface RelayApi {
@@ -71,4 +84,9 @@ export interface RelayApi {
     onExit(cb: (ptyId: number, code: number) => void): () => void
   }
   handoff(req: HandoffRequest): Promise<StartResult>
+  prefs: { get(): Promise<Prefs>; set(patch: Partial<Prefs>): Promise<Prefs> }
+  /** user chose to wait: Relay shows a notification at resetAt (never types into the CLI) */
+  remindReset(accountId: string, resetAt: number): Promise<void>
+  onLimit(cb: (hit: LimitHit) => void): () => void
+  onFocusTab(cb: (ptyId: number) => void): () => void
 }

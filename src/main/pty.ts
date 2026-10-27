@@ -4,6 +4,7 @@ import { terminate } from './handoff'
 interface Entry {
   proc: pty.IPty
   accountId: string
+  sessionId: string | undefined
   exited: Promise<void>
 }
 const ptys = new Map<number, Entry>()
@@ -15,6 +16,7 @@ export function spawnPty(
   cwd: string,
   env: Record<string, string>,
   accountId: string,
+  sessionId: string | undefined,
   onData: (id: number, d: string) => void,
   onExit: (id: number, code: number) => void
 ): number {
@@ -28,7 +30,7 @@ export function spawnPty(
       res()
     })
   )
-  ptys.set(id, { proc, accountId, exited })
+  ptys.set(id, { proc, accountId, sessionId, exited })
   return id
 }
 
@@ -45,5 +47,8 @@ export const killAll = (): Promise<void[]> => Promise.all([...ptys.keys()].map(k
 export const killAccountPtys = (accountId: string): Promise<void[]> =>
   Promise.all([...ptys].filter(([, e]) => e.accountId === accountId).map(([id]) => killPty(id)))
 
-/** Owner account of a live pty (undefined once exited). */
-export const ptyAccount = (id: number): string | undefined => ptys.get(id)?.accountId
+/** Owner account + session of a live pty (undefined once exited). */
+export const ptyInfo = (id: number): { accountId: string; sessionId: string | undefined } | undefined => {
+  const e = ptys.get(id)
+  return e && { accountId: e.accountId, sessionId: e.sessionId }
+}

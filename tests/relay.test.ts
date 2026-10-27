@@ -1,8 +1,10 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { buildEnv } from '../src/main/env'
+import { parseLimitLine, parseLimitText, parseResetAt, scheduleAt, tailFile, watchLimits } from '../src/main/limit'
+import { loadPrefs, savePrefs } from '../src/main/prefs'
 import { copySessionForHandoff, runHandoff, terminate } from '../src/main/handoff'
 import { claudeProjectDir, encodeCwd } from '../src/main/paths'
 import { listSessions, sessionTitle } from '../src/main/sessions'
@@ -233,8 +235,8 @@ describe('usage', () => {
   const NOW = Date.parse('2026-10-09T05:00:00Z')
   const asst = (ts: string, tok = 0, extra: object = {}) =>
     line({ type: 'assistant', timestamp: ts, message: { usage: { input_tokens: tok, output_tokens: tok, cache_creation_input_tokens: tok, cache_read_input_tokens: tok } }, ...extra })
-  const lim = (ts: string, kind = 'session') =>
-    line({ type: 'assistant', timestamp: ts, isApiErrorMessage: true, error: 'rate_limit', message: { usage: { input_tokens: 0 }, content: [{ type: 'text', text: `You've hit your ${kind} limit · resets 1:10am (America/Bogota)` }] } })
+  const lim = (ts: string, kind = 'session', when = '1:10am (America/Bogota)') =>
+    line({ type: 'assistant', timestamp: ts, isApiErrorMessage: true, error: 'rate_limit', message: { usage: { input_tokens: 0 }, content: [{ type: 'text', text: `You've hit your ${kind} limit · resets ${when}` }] } })
   const put = (cfg: string, name: string, body: string, mtime = NOW / 1000) => {
     const d = join(cfg, 'projects', 'p')
     mkdirSync(d, { recursive: true })
@@ -258,14 +260,14 @@ describe('usage', () => {
   it('limited only while the rate_limit line is newer than any successful reply', async () => {
     const c = tmp()
     put(c, 'a.jsonl', asst('2026-10-09T03:00:00Z') + lim('2026-10-09T04:17:00Z'))
-    expect((await scanUsage(c, NOW)).limited).toEqual({ kind: 'session', resetText: '1:10am (America/Bogota)' })
+    expect((await scanUsage(c, NOW)).limited).toEqual({ kind: 'session', resetText: '1:10am (America/Bogota)', resetAt: Date.parse('2026-10-09T06:10:00Z') })
     put(c, 'b.jsonl', asst('2026-10-09T04:30:00Z'))
     expect((await scanUsage(c, NOW)).limited).toBeUndefined()
     const w = tmp()
-    put(w, 'a.jsonl', lim('2026-10-05T04:17:00Z', 'weekly'))
+    put(w, 'a.jsonl', lim('2026-10-05T04:17:00Z', 'weekly', 'Oct 12, 3pm (UTC)'))
     expect((await scanUsage(w, NOW)).limited?.kind).toBe('weekly')
     const s = tmp()
-    put(s, 'a.jsonl', lim('2026-10-09T00:00:00Z')) // session limit older than 5h: expired
+    put(s, 'a.jsonl', lim('2026-10-08T00:00:00Z')) // reset time already passed: expired
     expect((await scanUsage(s, NOW)).limited).toBeUndefined()
   })
 })
@@ -287,23 +289,38 @@ describe('usage: dedupe, copies, unreadable files, tampered accounts', () => {
     put(c, 'a.jsonl', msg('2026-10-09T04:00:00Z', 'm1', 5) + msg('2026-10-09T04:00:01Z', 'm1', 5) + msg('2026-10-09T04:01:00Z', 'm2', 1))
     expect((await scanUsage(c, NOW)).tokens5h).toBe(6)
   })
-  it('ignores lines of a transcript copied into the account (rate_limit and tokens)', async () => {
+  it('ignores lines copied into the account by byte range, keeps the target\'s own', async () => {
     const c = tmp()
-    const body = msg('2026-10-09T04:00:00Z', 'm1', 50) + limLine('2026-10-09T04:17:00Z')
-    put(c, `${SID}.jsonl`, body)
-    expect((await scanUsage(c, NOW)).limited).toBeDefined()
-    const copiedAt = Date.parse('2026-10-09T04:20:00Z')
-    expect(await scanUsage(c, NOW, { [SID]: copiedAt })).toEqual({ tokens5h: 0 })
-    put(c, `${SID}.jsonl`, body + msg('2026-10-09T04:30:00Z', 'm9', 2)) // new work on the target after the copy
-    expect(await scanUsage(c, NOW, { [SID]: copiedAt })).toEqual({ tokens5h: 2 })
-    put(c, `${SID}/subagents/x.jsonl`, limLine('2026-10-09T04:10:00Z')) // sibling dir belongs to the same session
-    expect((await scanUsage(c, NOW, { [SID]: copiedAt })).limited).toBeUndefined()
+    const own = msg('2026-10-09T03:00:00Z', 'own', 7)
+    const copiedBody = msg('2026-10-09T04:00:00Z', 'm1', 50) + limLine('2026-10-09T04:17:00Z')
+    const later = msg('2026-10-09T04:30:00Z', 'm9', 2)
+    put(c, `${SID}.jsonl`, own + copiedBody + later)
+    const from = Buffer.byteLength(own)
+    const rec = { ranges: [[from, from + Buffer.byteLength(copiedBody)]] as [number, number][], sib: [] }
+    expect(await scanUsage(c, NOW, {})).toMatchObject({ tokens5h: 59 })
+    expect(await scanUsage(c, NOW, { [SID]: rec })).toEqual({ tokens5h: 9 }) // own 7 + later 2, no limit
+    put(c, `${SID}/subagents/x.jsonl`, limLine('2026-10-09T04:45:00Z') + msg('2026-10-09T04:11:00Z', 'sub', 100))
+    expect((await scanUsage(c, NOW, { [SID]: rec })).limited).toBeDefined() // sibling file not recorded as copied
+    const r2 = { ...rec, sib: [`${SID}/subagents/x.jsonl`] }
+    expect(await scanUsage(c, NOW, { [SID]: r2 })).toEqual({ tokens5h: 9 })
   })
-  it('records copies per account', () => {
+  it('dedupe keeps the max usage per message id and limits end at resetAt', async () => {
+    const c = tmp()
+    put(c, 'a.jsonl', msg('2026-10-09T04:00:00Z', 'm1', 1) + msg('2026-10-09T04:00:01Z', 'm1', 5))
+    expect((await scanUsage(c, NOW)).tokens5h).toBe(5)
+    const d = tmp()
+    put(d, 'a.jsonl', limLine('2026-10-09T04:17:00Z')) // resets 1:10am UTC on 10-10
+    expect((await scanUsage(d, NOW)).limited?.resetAt).toBe(Date.parse('2026-10-10T01:10:00Z'))
+    expect((await scanUsage(d, Date.parse('2026-10-10T01:11:00Z'))).limited).toBeUndefined()
+  })
+  it('records copy ranges, skips no-ops, voids ranges on replace', () => {
     const h = tmp()
-    recordCopy(h, 'a', SID, 5)
-    recordCopy(h, 'a', 'x', 6)
-    expect(loadCopies(h)).toEqual({ a: { [SID]: 5, x: 6 } })
+    recordCopy(h, 'a', SID, { from: 0, to: 10, replaced: false, sib: [] })
+    recordCopy(h, 'a', SID, { from: 10, to: 10, replaced: false, sib: [] }) // nothing appended
+    recordCopy(h, 'a', SID, { from: 20, to: 30, replaced: false, sib: ['s/x.jsonl'] })
+    expect(loadCopies(h)).toEqual({ a: { [SID]: { ranges: [[0, 10], [20, 30]], sib: ['s/x.jsonl'] } } })
+    recordCopy(h, 'a', SID, { from: 0, to: 5, replaced: true, sib: [] })
+    expect(loadCopies(h).a![SID]!.ranges).toEqual([[0, 5]])
   })
   it('skips unreadable files instead of throwing', async () => {
     const c = tmp()
@@ -322,5 +339,124 @@ describe('usage: dedupe, copies, unreadable files, tampered accounts', () => {
     await removeAccount(home, a.id, async () => void order.push(`unlinked:${loadAccounts(home).length}`))
     expect(order).toEqual(['unlinked:0']) // unlinked before cleanup hook runs
     expect(existsSync(join(victim, 'keep'))).toBe(true)
+  })
+})
+
+describe('copy result', () => {
+  it('reports the copied byte range, new sibling files and replacement', () => {
+    const cwd = '/work/proj'
+    const [from, to] = [tmp(), tmp()].map((configDir, i) => ({ id: `a${i}`, label: `A${i}`, provider: 'claude' as const, configDir }))
+    const sd = claudeProjectDir(from!.configDir, cwd)
+    mkdirSync(join(sd, SID, 'subagents'), { recursive: true })
+    writeFileSync(join(sd, `${SID}.jsonl`), 'one\n')
+    writeFileSync(join(sd, SID, 'subagents', 'a.jsonl'), 's\n')
+    const r1 = copySessionForHandoff(from!, to!, cwd, SID)
+    expect([r1.from, r1.to, r1.replaced, r1.sib]).toEqual([0, 4, false, [`${SID}/subagents/a.jsonl`]])
+    const r2 = copySessionForHandoff(from!, to!, cwd, SID)
+    expect([r2.from, r2.to, r2.sib]).toEqual([4, 4, []]) // idempotent: nothing appended
+    appendFileSync(join(sd, `${SID}.jsonl`), 'two\n')
+    const r3 = copySessionForHandoff(from!, to!, cwd, SID)
+    expect([r3.from, r3.to]).toEqual([4, 8])
+    writeFileSync(join(sd, `${SID}.jsonl`), 'zzz\n')
+    const r4 = copySessionForHandoff(from!, to!, cwd, SID, () => 1)
+    expect([r4.from, r4.to, r4.replaced]).toEqual([0, 4, true])
+  })
+})
+
+describe('reset parsing', () => {
+  const ref = Date.parse('2026-10-09T04:17:00Z') // 23:17 on 10-08 in Bogota (UTC-5, no DST)
+  it('time only: next occurrence after the line, with day rollover', () => {
+    expect(parseResetAt('1:10am (America/Bogota)', ref)).toBe(Date.parse('2026-10-09T06:10:00Z'))
+    expect(parseResetAt('11:30pm (America/Bogota)', ref)).toBe(Date.parse('2026-10-09T04:30:00Z')) // same local day
+    expect(parseResetAt('11pm (America/Bogota)', ref)).toBe(Date.parse('2026-10-10T04:00:00Z')) // already passed -> tomorrow
+    expect(parseResetAt('12am (UTC)', ref)).toBe(Date.parse('2026-10-10T00:00:00Z'))
+    expect(parseResetAt('12pm (UTC)', ref)).toBe(Date.parse('2026-10-09T12:00:00Z'))
+  })
+  it('date form, year rollover, DST zone', () => {
+    expect(parseResetAt('Oct 30, 9am (America/Bogota)', ref)).toBe(Date.parse('2026-10-30T14:00:00Z'))
+    expect(parseResetAt('Jan 2, 9:30am (UTC)', ref)).toBe(Date.parse('2027-01-02T09:30:00Z'))
+    expect(parseResetAt('Nov 5, 9am (America/New_York)', ref)).toBe(Date.parse('2026-11-05T14:00:00Z')) // EST after DST ends
+    expect(parseResetAt('Oct 20, 9am (America/New_York)', ref)).toBe(Date.parse('2026-10-20T13:00:00Z')) // EDT
+  })
+  it('tolerates unknown formats', () => {
+    for (const t of ['soon', '1:10am', '1:10am (Not/AZone)', '13pm (UTC)', 'Foo 3, 9am (UTC)', '9:75am (UTC)']) expect(parseResetAt(t, ref)).toBeNull()
+  })
+  it('parses limit text and lines', () => {
+    expect(parseLimitText("You've hit your weekly limit · resets Oct 12, 3pm (UTC)", ref)).toEqual({ kind: 'weekly', resetText: 'Oct 12, 3pm (UTC)', resetAt: Date.parse('2026-10-12T15:00:00Z') })
+    expect(parseLimitText('hello', ref)).toBeNull()
+    const ok = JSON.stringify({ type: 'assistant', timestamp: '2026-10-09T04:17:00Z', isApiErrorMessage: true, error: 'rate_limit', message: { content: [{ text: "You've hit your session limit · resets 1:10am (America/Bogota)" }] } })
+    expect(parseLimitLine(ok)).toMatchObject({ kind: 'session', ts: ref, resetAt: Date.parse('2026-10-09T06:10:00Z') })
+    expect(parseLimitLine(ok.replace('"rate_limit"', '"other_rate_limit"'))).toBeNull()
+    expect(parseLimitLine('{"rate_limit"')).toBeNull()
+    expect(parseLimitLine(JSON.stringify({ type: 'assistant', timestamp: 'x', error: 'rate_limit' }))).toBeNull()
+  })
+  it('scheduleAt fires once at the time, can be cancelled, ignores the past', () => {
+    vi.useFakeTimers()
+    const fn = vi.fn()
+    scheduleAt(2000, fn, 1000)
+    scheduleAt(500, fn, 1000)
+    scheduleAt(5000, fn, 1000)()
+    vi.advanceTimersByTime(5000)
+    expect(fn).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
+})
+
+describe('tail + watchLimits', () => {
+  const lim = (t: string) => JSON.stringify({ type: 'assistant', timestamp: '2026-10-09T04:17:00Z', isApiErrorMessage: true, error: 'rate_limit', message: { content: [{ text: `You've hit your session limit · resets ${t}` }] } }) + '\n'
+  it('reads only appended complete lines, survives a late file and truncation', () => {
+    const f = join(tmp(), 'late.jsonl')
+    const got: string[] = []
+    const t = tailFile(f, (l) => got.push(...l))
+    t.check() // file does not exist yet
+    writeFileSync(f, 'a\npart')
+    t.check()
+    expect(got).toEqual(['a'])
+    appendFileSync(f, 'ial\nb\n')
+    t.check()
+    expect(got).toEqual(['a', 'partial', 'b'])
+    writeFileSync(f, 'c\n') // truncated and rewritten
+    t.check()
+    expect(got.at(-1)).toBe('c')
+    t.stop()
+  })
+  it('starts at the current end (old limit lines do not fire) and collapses repeats', () => {
+    const f = join(tmp(), 's.jsonl')
+    writeFileSync(f, lim('1:10am (UTC)'))
+    const hits: string[] = []
+    const w = watchLimits(f, (h) => hits.push(h.resetText))
+    w.check()
+    expect(hits).toEqual([])
+    appendFileSync(f, 'noise\n' + lim('1:10am (UTC)') + lim('1:10am (UTC)'))
+    w.check()
+    expect(hits).toEqual(['1:10am (UTC)'])
+    appendFileSync(f, lim('2:00am (UTC)'))
+    w.check()
+    expect(hits).toEqual(['1:10am (UTC)', '2:00am (UTC)'])
+    w.stop()
+  })
+})
+
+describe('prefs', () => {
+  it('defaults, merges only known booleans, tolerates garbage', () => {
+    const h = tmp()
+    expect(loadPrefs(h)).toEqual({ notifications: { system: true, sound: true } })
+    expect(savePrefs(h, { notifications: { sound: false, evil: 1, system: 'x' } })).toEqual({ notifications: { system: true, sound: false } })
+    expect(loadPrefs(h).notifications.sound).toBe(false)
+    expect(savePrefs(h, null).notifications.sound).toBe(false)
+    writeFileSync(join(h, 'prefs.json'), 'nope')
+    expect(loadPrefs(h).notifications.system).toBe(true)
+  })
+})
+
+describe('import under managed accounts (realpath)', () => {
+  it('refuses symlinks into <home>/accounts', () => {
+    const h = tmp()
+    mkdirSync(join(h, 'accounts', 'x'), { recursive: true })
+    const link = join(tmp(), 'lnk')
+    symlinkSync(join(h, 'accounts', 'x'), link)
+    expect(() => checkNewAccount('l', 'claude', link, h)).toThrow(/managed/)
+    expect(() => checkNewAccount('l', 'claude', join(h, 'accounts', 'new'), h)).toThrow(/managed/)
+    expect(() => checkNewAccount('l', 'claude', tmp(), h)).not.toThrow()
   })
 })

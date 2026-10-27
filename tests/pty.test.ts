@@ -14,9 +14,9 @@ vi.mock('node-pty', () => ({
   }
 }))
 
-const { killAccountPtys, killAll, killPty, ptyAccount, spawnPty, writePty } = await import('../src/main/pty')
+const { killAccountPtys, killAll, killPty, ptyInfo, spawnPty, writePty } = await import('../src/main/pty')
 const exits: number[] = []
-const mk = (acc: string) => spawnPty('x', [], '/', {}, acc, () => undefined, (id) => void exits.push(id))
+const mk = (acc: string, sid?: string) => spawnPty('x', [], '/', {}, acc, sid, () => undefined, (id) => void exits.push(id))
 
 describe('pty map', () => {
   beforeEach(() => {
@@ -24,15 +24,15 @@ describe('pty map', () => {
     exits.length = 0
   })
   it('kills only its own id, cleans up on exit, routes writes by id', async () => {
-    const [a, b] = [mk('A'), mk('B')] as [number, number]
+    const [a, b] = [mk('A', 's1'), mk('B')] as [number, number]
     writePty(b, 'hi')
     expect(fakes[1].written).toEqual(['hi'])
     expect(fakes[0].written).toEqual([])
     await killPty(a)
     expect([fakes[0].killed, fakes[1].killed]).toEqual([1, 0])
     expect(exits).toEqual([a])
-    expect(ptyAccount(a)).toBeUndefined()
-    expect(ptyAccount(b)).toBe('B')
+    expect(ptyInfo(a)).toBeUndefined()
+    expect(ptyInfo(b)).toEqual({ accountId: 'B', sessionId: undefined })
     await killPty(a) // already gone: no-op
     expect(fakes[0].killed).toBe(1)
     await killAll()

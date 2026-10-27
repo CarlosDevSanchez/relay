@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Account, AccountStatus, LimitHit, SessionInfo } from '../shared/types'
+import type { Account, AccountStatus, LimitHit, SessionInfo, SharedReport } from '../shared/types'
 import { TerminalPane } from './Terminal'
 
 const base = (p: string) => p.split('/').filter(Boolean).pop() ?? p
@@ -54,6 +54,19 @@ export function App() {
     }
   }
 
+  const showShared = (label: string, r: SharedReport) =>
+    setNotices((n) => [
+      ...n,
+      [`Memoria compartida · ${label}: ${r.linked.length} enlace(s) creado(s)`, ...r.notes, ...(r.backups.length ? ['Copias de seguridad:', ...r.backups] : []), ...r.errors.map((e) => `ERROR ${e}`)].join('\n')
+    ])
+
+  const setShared = (a: Account, enabled: boolean) =>
+    run(async () => {
+      const r = await window.relay.shared.set(a.id, enabled)
+      setAccounts(r.accounts)
+      showShared(a.label, r.report)
+    })
+
   const loadStatus = useCallback(
     (id: string, refresh = false) =>
       window.relay.accounts
@@ -72,7 +85,22 @@ export function App() {
 
   useEffect(() => {
     void window.relay.projects.list().then(setProjects)
-    void refresh(null).then((l) => l.forEach((a) => void loadStatus(a.id)))
+    void refresh(null).then((l) => {
+      l.forEach((a) => void loadStatus(a.id))
+      // offered once: answering "no" persists sharedMemory=false
+      void (async () => {
+        for (const a of l.filter((x) => x.managed && x.provider === 'claude' && x.sharedMemory === undefined)) {
+          const on = confirm(`¿Compartir la memoria global (CLAUDE.md, skills, agents, commands) de "${a.label}" con tus otras cuentas? Su contenido se mueve a ~/.relay/shared; lo que choque se guarda en ~/.relay/backups.`)
+          try {
+            const r = await window.relay.shared.set(a.id, on)
+            setAccounts(r.accounts)
+            if (on) showShared(a.label, r.report)
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e))
+          }
+        }
+      })()
+    })
   }, [refresh, loadStatus])
   useEffect(() => {
     if (!active && accounts[0]) setActive(accounts[0].id)
@@ -111,12 +139,13 @@ export function App() {
         setTabs((ts) => ts.map((x) => (x.ptyId === id && x.sessionId === sessionId ? { ...x, title, hint: `Sesión cambiada a ${title}` } : x)))
       }), 3000)
     })
+    const offSh = window.relay.onShared((m) => setNotices((n) => [...n, m]))
     const offRem = window.relay.onReminder((id) => {
       const label = accountsRef.current.find((a) => a.id === id)?.label ?? id
       setNotices((n) => [...n, `${label} ya tiene cuota disponible`])
       void loadStatus(id, true)
     })
-    return () => (offHit(), offFocus(), offStale(), offSession(), offRem())
+    return () => (offHit(), offFocus(), offStale(), offSession(), offRem(), offSh())
   }, [loadStatus])
 
   const open = (t: Tab, replace?: number) => {
@@ -155,6 +184,7 @@ export function App() {
       if (imp && !dir) return
       const a = await window.relay.accounts.add(label, 'claude', dir ?? undefined)
       await refresh(cwd)
+      if (a.managed) await setShared(a, true) // managed accounts are linked by default
       void loadStatus(a.id)
     })
 
@@ -168,7 +198,7 @@ export function App() {
     run(async () => {
       const msg = a.managed
         ? `Delete account "${a.label}" and its config dir ${a.configDir}? This logs it out and removes its sessions.`
-        : `Remove "${a.label}" from Relay? Its directory ${a.configDir} is left untouched.`
+        : `Remove "${a.label}" from Relay? Its directory ${a.configDir} is left untouched${a.sharedMemory ? ', salvo que sus enlaces de memoria compartida se sustituyen antes por copias reales de ~/.relay/shared' : ''}.`
       if (!confirm(msg)) return
       setAccounts(await window.relay.accounts.remove(a.id))
       setTabs((ts) => ts.filter((t) => t.accountId !== a.id))
@@ -221,9 +251,26 @@ export function App() {
                 </div>
                 {s?.limited && <div className="text-red-400">Limitada hasta {s.limited.resetText}</div>}
                 {s && <div className="text-white/40">{fmt(s.tokens5h)} tokens / 5h (local)</div>}
+                {a.drift && <div className="text-amber-400">Memoria compartida desincronizada ({a.drift.join(', ')}); desactívala y vuelve a activarla.</div>}
+                {a.provider === 'claude' && (
+                  <label className="flex items-center gap-1 text-white/60">
+                    <input type="checkbox" checked={!!a.sharedMemory} onChange={(e) => setShared(a, e.target.checked)} /> Memoria compartida
+                  </label>
+                )}
               </div>
             )
           })}
+        </div>
+        <div className="border-b border-white/10 px-3 py-2">
+          <button
+            className={btn}
+            onClick={() => run(async () => {
+              const r = await window.relay.shared.open()
+              setNotices((n) => [...n, `Memoria compartida: ${r.dir}\nCLAUDE.md global: ${r.claudeMd}`])
+            })}
+          >
+            Memoria compartida
+          </button>
         </div>
         <div className="flex items-center justify-between px-3 py-2 text-xs uppercase text-white/50">
           Projects
@@ -294,7 +341,7 @@ export function App() {
         </div>
         {notices.map((n, i) => (
           <div key={i} className="flex justify-between border-b border-white/10 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200">
-            {n}
+            <span className="whitespace-pre-wrap break-all">{n}</span>
             <button onClick={() => setNotices((ns) => ns.filter((_, j) => j !== i))}>✕</button>
           </div>
         ))}

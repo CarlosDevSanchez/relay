@@ -64,3 +64,11 @@ export function checkReminder(resetAt: unknown, now = Date.now()): number {
   if (typeof resetAt !== 'number' || !Number.isFinite(resetAt) || resetAt <= now || resetAt > now + 8 * 86400_000) throw new Error('Invalid resetAt')
   return resetAt
 }
+
+/** Toggle request from the renderer: known Claude account + real boolean. */
+export function checkSharedToggle(id: unknown, enabled: unknown, accounts: Account[]): Account {
+  const a = checkAccountId(id, accounts)
+  if (typeof enabled !== 'boolean') throw new Error('Invalid enabled')
+  if (a.provider !== 'claude') throw new Error('Memoria compartida: solo cuentas Claude')
+  return a
+}

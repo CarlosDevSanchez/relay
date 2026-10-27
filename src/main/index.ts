@@ -1,24 +1,30 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { BrowserWindow, Notification, app, dialog, ipcMain } from 'electron'
+import { BrowserWindow, Notification, app, dialog, ipcMain, shell } from 'electron'
 import type { Account, HandoffRequest, StartRequest, StartResult } from '../shared/types'
 import { buildEnv } from './env'
 import { copySessionForHandoff, runHandoff, sourceExists } from './handoff'
-import { killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty } from './pty'
+import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty } from './pty'
 import { providers } from './providers'
 import { type LimitInfo, scheduleAt, pickRebind, watchLimits, watchNewSession } from './limit'
 import { claudeProjectDir } from './paths'
 import { loadPrefs, savePrefs } from './prefs'
+import { drifted, linkAccount, nextFlag, sharedDir, unlinkAccount } from './shared'
 import { listSessions } from './sessions'
 import { accountStatus } from './usage'
-import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount } from './store'
-import { checkAccountId, checkHandoff, checkNewAccount, checkReminder, checkRename, checkStart } from './validate'
+import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount, setSharedMemory } from './store'
+import { checkAccountId, checkHandoff, checkNewAccount, checkReminder, checkRename, checkSharedToggle, checkStart } from './validate'
 
 const HOME = join(homedir(), '.relay')
 let win: BrowserWindow
 
-const list = (): Account[] => loadAccounts(HOME).map((a) => ({ ...a, managed: isManaged(HOME, a) }))
+const list = (): Account[] =>
+  loadAccounts(HOME).map((a) => {
+    const d = a.sharedMemory ? drifted(HOME, a) : []
+    return { ...a, managed: isManaged(HOME, a), ...(d.length ? { drift: d } : {}) }
+  })
 
 const send = (ch: string, ...a: unknown[]): void => {
   if (!win.isDestroyed()) win.webContents.send(ch, ...a)
@@ -131,7 +137,13 @@ function handle(): void {
     return list()
   })
   ipcMain.handle('accounts:remove', async (_e, id: string) => {
-    checkAccountId(id, loadAccounts(HOME))
+    const acc = checkAccountId(id, loadAccounts(HOME))
+    // an imported dir must be left self-contained: links -> real copies first (abort on failure)
+    if (acc.provider === 'claude' && !isManaged(HOME, acc) && existsSync(acc.configDir)) {
+      await killAccountPtys(id)
+      const r = unlinkAccount(HOME, acc)
+      if (r.errors.length) throw new Error(`No se pudo restaurar la memoria local: ${r.errors.join('; ')}`)
+    }
     reminders.get(id)?.()
     reminders.delete(id)
     await removeAccount(HOME, id, () => killAccountPtys(id))
@@ -142,11 +154,47 @@ function handle(): void {
     const a = checkAccountId(id, loadAccounts(HOME))
     return accountStatus(a, refresh === true, loadCopies(HOME)[a.id])
   })
+  ipcMain.handle('shared:set', async (_e, id: unknown, enabled: unknown) => {
+    const a = checkSharedToggle(id, enabled, loadAccounts(HOME))
+    if (hasLivePty(a.id)) throw new Error('Cierra las pestañas de esta cuenta antes de cambiar la memoria compartida')
+    const on = enabled === true // validated boolean
+    if (on && !isManaged(HOME, a)) {
+      const c = await dialog.showMessageBox(win, {
+        type: 'question',
+        buttons: ['Cancelar', 'Activar'],
+        defaultId: 0,
+        cancelId: 0,
+        message: `Activar memoria compartida en "${a.label}" (${a.configDir})?`,
+        detail: `Se reemplazarán por enlaces a ~/.relay/shared: CLAUDE.md, skills/, agents/, commands/ y projects/*/memory de tus proyectos. Su contenido se mueve a la memoria compartida y lo que choque se guarda en ~/.relay/backups/${a.id}/<fecha>/. No se tocan credenciales, ajustes ni historial. Al desactivar o quitar la cuenta se restauran copias reales.`
+      })
+      if (c.response !== 1) return { accounts: list(), report: { linked: [], backups: [], notes: ['Cancelado'], errors: [] } }
+    }
+    if (hasLivePty(a.id)) throw new Error('Cierra las pestañas de esta cuenta antes de cambiar la memoria compartida') // a tab may have opened during the dialog
+    const report = on ? linkAccount(HOME, a, loadProjects(HOME)) : unlinkAccount(HOME, a)
+    // a partial link still leaves links behind, so it is saved as requested; a failed unlink keeps an already-on flag so it can be retried
+    setSharedMemory(HOME, a.id, nextFlag(on, report.errors.length, a.sharedMemory))
+    return { accounts: list(), report }
+  })
+  ipcMain.handle('shared:open', async () => {
+    mkdirSync(sharedDir(HOME), { recursive: true })
+    await shell.openPath(sharedDir(HOME))
+    return { dir: sharedDir(HOME), claudeMd: join(sharedDir(HOME), 'CLAUDE.md') }
+  })
   ipcMain.handle('projects:list', () => loadProjects(HOME))
   ipcMain.handle('projects:add', async () => {
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
     const dir = r.canceled ? undefined : r.filePaths[0]
-    return dir ? addProject(HOME, dir) : loadProjects(HOME)
+    if (!dir) return loadProjects(HOME)
+    const all = addProject(HOME, dir)
+    for (const a of loadAccounts(HOME).filter((x) => x.sharedMemory)) {
+      // new project: link its memory too
+      if (hasLivePty(a.id)) send('shared:notice', `${a.label}: vuelve a activar la memoria compartida (sin pestañas abiertas) para enlazar el nuevo proyecto`)
+      else {
+        const r = linkAccount(HOME, a, all)
+        if (r.errors.length) send('shared:notice', `${a.label}: memoria compartida con errores\n${r.errors.join('\n')}`)
+      }
+    }
+    return all
   })
   ipcMain.handle('sessions:list', (_e, cwd: string) =>
     loadProjects(HOME).includes(cwd) ? listSessions(loadAccounts(HOME), cwd) : []

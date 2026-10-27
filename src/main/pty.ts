@@ -69,3 +69,4 @@ export const markStale = (id: number): void => void (ptys.get(id) && (ptys.get(i
 export const wasBound = (sessionId: string): boolean => everBound.has(sessionId)
 /** Live Relay ptys on this account + project dir. */
 export const livePtyCount = (accountId: string, cwd: string): number => [...ptys.values()].filter((e) => e.accountId === accountId && e.cwd === cwd).length
+export const hasLivePty = (accountId: string): boolean => [...ptys.values()].some((e) => e.accountId === accountId)

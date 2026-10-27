@@ -48,6 +48,10 @@ export function renameAccount(home: string, id: string, label: string): Account[
   return all
 }
 
+export function setSharedMemory(home: string, id: string, on: boolean): void {
+  writeJson(join(home, 'accounts.json'), loadAccounts(home).map((a) => (a.id === id ? { ...a, sharedMemory: on } : a)))
+}
+
 const managedDir = (home: string, id: string): string => join(resolve(home), 'accounts', id)
 export const isManaged = (home: string, a: Account): boolean => resolve(a.configDir) === managedDir(home, a.id)
 

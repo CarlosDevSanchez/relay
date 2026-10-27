@@ -17,6 +17,8 @@ const api: RelayApi = {
     status: (id, refresh) => ipcRenderer.invoke('accounts:status', id, refresh)
   },
   projects: { list: () => ipcRenderer.invoke('projects:list'), add: () => ipcRenderer.invoke('projects:add') },
+  shared: { set: (id, enabled) => ipcRenderer.invoke('shared:set', id, enabled), open: () => ipcRenderer.invoke('shared:open') },
+  onShared: (cb) => sub('shared:notice', cb),
   sessions: (cwd) => ipcRenderer.invoke('sessions:list', cwd),
   pty: {
     start: (req) => ipcRenderer.invoke('pty:start', req),

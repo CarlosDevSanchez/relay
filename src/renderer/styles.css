@@ -1,0 +1,4 @@
+@import 'tailwindcss';
+html, body, #root { height: 100%; margin: 0; background: #1f1e1d; color: #e8e6e3; font-family: system-ui, sans-serif; }
+.drag { -webkit-app-region: drag; }
+.nodrag { -webkit-app-region: no-drag; }

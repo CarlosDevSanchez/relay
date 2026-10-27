@@ -1,5 +1,7 @@
 export type ProviderId = 'claude' | 'codex'
 
+export const CROSS_PROVIDER = 'Claude ↔ Codex llegará después del MVP'
+
 export interface Account {
   id: string
   label: string
@@ -62,6 +64,8 @@ export interface AccountStatus {
   /** set when the latest rate_limit line is newer than any later successful assistant line */
   limited?: { kind: string; resetText: string; resetAt: number | null }
   tokens5h: number
+  /** the CLI was not asked (an imported dir that would get files written by the probe); only local transcripts were read */
+  unchecked?: boolean
 }
 
 export interface LimitHit {
@@ -71,13 +75,15 @@ export interface LimitHit {
   kind: string
   resetText: string
   resetAt: number | null
+  modelSpecific?: boolean
 }
 
 /** An existing Claude config dir found in the home dir (importable). */
 export interface Candidate {
   dir: string
+  provider: ProviderId
   loggedIn: boolean | null
-  /** not probed: the dir has no .claude.json yet and probing would create files in it */
+  /** not probed: the dir has no .claude.json (Codex: config.toml / sessions) yet and probing would create files in it */
   unchecked?: boolean
   default?: boolean
   email?: string

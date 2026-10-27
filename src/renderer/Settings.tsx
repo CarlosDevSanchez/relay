@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useState } from 'react'
-import type { Account, AccountStatus, CatalogLocation, CliStatus, McpReport, McpServer, Prefs } from '../shared/types'
-import { CLAUDE_MISSING, statusLine } from './status'
+import type { Account, AccountStatus, CatalogLocation, CliStatus, McpReport, McpServer, Prefs, ProviderId } from '../shared/types'
+import { NAMES, missingMsg, statusLine } from './status'
 import { Dialog } from './ui'
 
 export interface SettingsProps {
@@ -9,7 +9,7 @@ export interface SettingsProps {
   cli: CliStatus | null
   onClose(): void
   onDetect(): void
-  onInstall(): void
+  onInstall(provider: ProviderId): void
   setShared(a: Account, enabled: boolean): void
   rename(a: Account): void
   remove(a: Account): void
@@ -54,7 +54,7 @@ const Card = ({ children, className = '' }: { children: ReactNode; className?: s
 const Loading = () => <span className="loading loading-spinner loading-sm" aria-label="Cargando" />
 
 function Accounts(p: SettingsProps) {
-  const off = p.cli?.claude.installed === false
+  const off = (a: Account) => p.cli?.[a.provider]?.installed === false
   return (
     <div className="space-y-3">
       <div className="flex gap-2">
@@ -67,20 +67,18 @@ function Accounts(p: SettingsProps) {
             <b>{a.label}</b>
             <span className="space-x-2">
               <button className="btn btn-outline btn-xs" onClick={() => p.rename(a)}>Renombrar</button>
-              <button className="btn btn-outline btn-xs" disabled={off && a.provider === 'claude'} title={off && a.provider === 'claude' ? CLAUDE_MISSING : ''} onClick={() => p.login(a)}>Login</button>
+              <button className="btn btn-outline btn-xs" disabled={off(a)} title={off(a) ? missingMsg(a.provider) : ''} onClick={() => p.login(a)}>Login</button>
               <button className="btn btn-outline btn-error btn-xs" onClick={() => p.remove(a)}>Quitar</button>
             </span>
           </div>
           <div className="opacity-60">
-            {a.provider} · {a.managed ? 'gestionada por Relay' : a.defaultInstall ? 'instalación por defecto' : 'importada'} · <span className="break-all">{a.configDir}</span>
+            <span className="badge badge-ghost badge-sm">{a.provider}</span> {a.managed ? 'gestionada por Relay' : a.defaultInstall ? 'instalación por defecto' : 'importada'} · <span className="break-all">{a.configDir}</span>
           </div>
           <div className="opacity-60">{statusLine(p.statuses[a.id])}</div>
           {a.drift && <div className="text-warning">Memoria compartida desincronizada ({a.drift.join(', ')}); desactívala y vuelve a activarla.</div>}
-          {a.provider === 'claude' && (
-            <label className="mt-1 flex cursor-pointer items-center gap-2">
-              <input type="checkbox" className="toggle toggle-primary toggle-sm" checked={!!a.sharedMemory} onChange={(e) => p.setShared(a, e.target.checked)} /> Memoria compartida
-            </label>
-          )}
+          <label className="mt-1 flex cursor-pointer items-center gap-2">
+            <input type="checkbox" className="toggle toggle-primary toggle-sm" checked={!!a.sharedMemory} onChange={(e) => p.setShared(a, e.target.checked)} /> Memoria compartida{a.provider === 'codex' ? ' (solo AGENTS.md)' : ''}
+          </label>
         </Card>
       ))}
     </div>
@@ -213,11 +211,12 @@ function Cli(p: SettingsProps) {
   )
   return (
     <div className="space-y-3">
-      {row('Claude Code', p.cli?.claude)}
-      {p.cli?.claude.installed === false && (
-        <button className="btn btn-primary btn-sm" onClick={p.onInstall}>Instalar Claude Code</button>
-      )}
-      {row('Codex', p.cli?.codex, 'soporte en F5')}
+      {(['claude', 'codex'] as const).map((id) => (
+        <div key={id} className="space-y-3">
+          {row(NAMES[id], p.cli?.[id])}
+          {p.cli?.[id]?.installed === false && <button className="btn btn-primary btn-sm" onClick={() => p.onInstall(id)}>Instalar {NAMES[id]}</button>}
+        </div>
+      ))}
       <button className="btn btn-outline btn-sm" onClick={p.onDetect}>Volver a detectar</button>
     </div>
   )

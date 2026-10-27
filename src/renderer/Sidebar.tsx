@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import type { Account, AccountStatus, SessionInfo } from '../shared/types'
-import { CLAUDE_MISSING } from './status'
+import type { Account, AccountStatus, ProviderId, SessionInfo } from '../shared/types'
+import { NAMES, missingMsg } from './status'
 import { Dot, Dropdown, IconFolder, IconGear, IconKebab, IconLink, IconPlus, ago } from './ui'
 
 const base = (p: string) => p.split('/').filter(Boolean).pop() ?? p
@@ -13,7 +13,8 @@ export interface SidebarProps {
   projects: string[]
   cwd: string | null
   sessions: Record<string, SessionInfo[]>
-  claudeMissing: boolean
+  /** the provider's CLI is not installed */
+  missing(provider: ProviderId | undefined): boolean
   newSession(): void
   selectAccount(id: string): void
   selectProject(p: string): void
@@ -32,11 +33,13 @@ export function Sidebar(p: SidebarProps) {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   const isOpen = (x: string) => open[x] ?? x === p.cwd
   const label = (id: string) => p.accounts.find((a) => a.id === id)?.label ?? id
+  const prov = (id: string) => p.accounts.find((a) => a.id === id)?.provider
+  const activeProv = prov(p.active ?? '')
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-base-300 bg-base-200">
       <div className="drag px-3 pb-3 pt-10">
         <div className="mb-3 flex items-center gap-2 px-1 text-base font-semibold tracking-wide"><span className="status status-primary" aria-hidden="true" /> Relay</div>
-        <button className="btn btn-primary nodrag w-full" disabled={p.claudeMissing} title={p.claudeMissing ? CLAUDE_MISSING : ''} onClick={p.newSession}>
+        <button className="btn btn-primary nodrag w-full" disabled={p.missing(activeProv)} title={p.missing(activeProv) ? missingMsg(activeProv!) : ''} onClick={p.newSession}>
           <IconPlus /> Nueva sesión
         </button>
       </div>
@@ -59,6 +62,7 @@ export function Sidebar(p: SidebarProps) {
                   <div className="flex items-center gap-2">
                     <Dot tone={tone} />
                     <b className="min-w-0 flex-1 truncate text-sm">{a.label}</b>
+                    <span className="badge badge-ghost badge-sm" data-testid="provider-badge">{a.provider}</span>
                     {s?.plan && <span className="badge badge-soft badge-primary badge-sm uppercase">{s.plan}</span>}
                     {a.sharedMemory && <span className="tooltip tooltip-left opacity-60" data-tip="Memoria compartida"><IconLink /></span>}
                     <span onClick={(e) => e.stopPropagation()}>
@@ -68,8 +72,8 @@ export function Sidebar(p: SidebarProps) {
                         btnClass="btn btn-ghost btn-xs btn-square"
                         items={[
                           { label: 'Renombrar', onClick: () => p.rename(a) },
-                          { label: 'Iniciar sesión', onClick: () => p.login(a), disabled: p.claudeMissing && a.provider === 'claude', title: p.claudeMissing ? CLAUDE_MISSING : '' },
-                          ...(a.provider === 'claude' ? [{ label: a.sharedMemory ? 'Desactivar memoria compartida' : 'Activar memoria compartida', onClick: () => p.setShared(a, !a.sharedMemory) }] : []),
+                          { label: 'Iniciar sesión', onClick: () => p.login(a), disabled: p.missing(a.provider), title: p.missing(a.provider) ? missingMsg(a.provider) : '' },
+                          { label: a.sharedMemory ? 'Desactivar memoria compartida' : 'Activar memoria compartida', onClick: () => p.setShared(a, !a.sharedMemory) },
                           { label: 'Actualizar estado', onClick: () => p.refreshStatus(a.id) },
                           { label: 'Quitar', onClick: () => p.remove(a), danger: true }
                         ]}
@@ -85,7 +89,7 @@ export function Sidebar(p: SidebarProps) {
                     <div className="text-xs">
                       <div className="truncate opacity-70">{s.loggedIn === null ? 'estado desconocido' : s.loggedIn ? (s.email ?? 'sesión iniciada') : 'sin sesión'}</div>
                       {s.limited && <div className="text-warning">Limitada hasta {s.limited.resetText}</div>}
-                      <div className="opacity-60">{fmt(s.tokens5h)} tokens / 5h</div>
+                      {a.provider === 'claude' && <div className="opacity-60">{fmt(s.tokens5h)} tokens / 5h</div>}
                     </div>
                   )}
                   {a.drift && <div className="text-xs text-warning">Memoria compartida desincronizada; desactívala y vuelve a activarla.</div>}
@@ -111,8 +115,8 @@ export function Sidebar(p: SidebarProps) {
                 <ul>
                   {(p.sessions[x] ?? []).length === 0 && <li className="menu-disabled"><span className="text-xs">Sin sesiones</span></li>}
                   {(p.sessions[x] ?? []).map((s) => (
-                    <li key={`${s.accountId}${s.id}`} className={p.claudeMissing ? 'menu-disabled' : ''}>
-                      <button onClick={() => p.resume(x, s)} disabled={p.claudeMissing} className="flex-col items-start gap-0 text-left">
+                    <li key={`${s.accountId}${s.id}`} className={p.missing(prov(s.accountId)) ? 'menu-disabled' : ''}>
+                      <button onClick={() => p.resume(x, s)} disabled={p.missing(prov(s.accountId))} className="flex-col items-start gap-0 text-left">
                         <span className="w-full truncate text-xs font-medium">{s.title}</span>
                         <span className="text-[11px] opacity-60">{label(s.accountId)} · {ago(s.mtimeMs)}</span>
                       </button>

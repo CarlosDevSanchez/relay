@@ -129,7 +129,7 @@ describe('mcp default install', () => {
 describe('install command', () => {
   it('honors the e2e override only when main passes it', () => {
     expect(installCommand('claude', 'echo hi')!.args).toEqual(['-lc', 'echo hi'])
-    expect(installCommand('codex', 'echo hi')).toBeUndefined()
+    expect(installCommand('codex', 'echo hi')!.args).toEqual(['-lc', 'echo hi'])
     process.env.RELAY_E2E_INSTALL_SCRIPT = 'echo env'
     try {
       expect(installCommand('claude')!.args[1]).toBe('curl -fsSL https://claude.ai/install.sh | bash')
@@ -143,7 +143,8 @@ describe('install command', () => {
     expect(c.args).toEqual(['-lc', 'curl -fsSL https://claude.ai/install.sh | bash'])
     expect(c.display).toBe(`/bin/bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'`)
     expect(checkInstall('claude')).toEqual(c)
-    for (const bad of ['codex', 'rm -rf /', '__proto__', 'toString', undefined, 5, { id: 'claude' }]) {
+    expect(installCommand('codex')!.args[1]).toBe('if command -v brew >/dev/null 2>&1; then brew install --cask codex; else npm i -g @openai/codex; fi')
+    for (const bad of ['rm -rf /', '__proto__', 'toString', undefined, 5, { id: 'claude' }]) {
       expect(installCommand(bad)).toBeUndefined()
       expect(() => checkInstall(bad)).toThrow(/instalador/)
     }

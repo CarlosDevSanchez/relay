@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
-import type { AccountStatus } from '../shared/types'
+import type { AccountStatus, ProviderId } from '../shared/types'
 import { TerminalPane } from './Terminal'
 
 export interface LoginPanelProps {
   ptyId: number
+  /** Codex has no code to paste: the browser flow returns to the CLI by itself (unverified by hand, see docs/spikes/F5.md) */
+  provider?: ProviderId
   /** the login pty is still alive */
   running: boolean
   /** auth status after the login pty exited; undefined while it is being checked */
@@ -13,8 +15,9 @@ export interface LoginPanelProps {
   continueLabel?: string
 }
 
-/** Friendly front for `claude auth login`. The CLI still does the login; the only thing typed is the code the user pastes here. */
+/** Friendly front for `claude auth login` / `codex login`. The CLI still does the login; the only thing typed is the code the user pastes here (Claude). */
 export function LoginPanel(p: LoginPanelProps) {
+  const codex = p.provider === 'codex'
   const [code, setCode] = useState('')
   const [term, setTerm] = useState(false)
   const [out, setOut] = useState(false) // the CLI has printed something
@@ -44,12 +47,14 @@ export function LoginPanel(p: LoginPanelProps) {
             <ul className="steps steps-vertical text-sm">
               <li className="step step-primary">Se abrirá tu navegador</li>
               <li className="step step-primary">Inicia sesión</li>
-              <li className="step step-primary">Copia el código y pégalo aquí</li>
+              <li className="step step-primary">{codex ? 'Autoriza el acceso y vuelve aquí (se detecta solo)' : 'Copia el código y pégalo aquí'}</li>
             </ul>
-            <form className="join w-full" onSubmit={(e) => (e.preventDefault(), send())}>
-              <input className="input join-item w-full" placeholder="Pega aquí el código" aria-label="Pega aquí el código" autoComplete="off" spellCheck={false} value={code} onChange={(e) => setCode(e.target.value)} />
-              <button className="btn btn-primary join-item" type="submit" disabled={!code.trim()}>Enviar código</button>
-            </form>
+            {!codex && (
+              <form className="join w-full" onSubmit={(e) => (e.preventDefault(), send())}>
+                <input className="input join-item w-full" placeholder="Pega aquí el código" aria-label="Pega aquí el código" autoComplete="off" spellCheck={false} value={code} onChange={(e) => setCode(e.target.value)} />
+                <button className="btn btn-primary join-item" type="submit" disabled={!code.trim()}>Enviar código</button>
+              </form>
+            )}
             <p className="flex items-center gap-2 text-xs opacity-60"><span className="loading loading-dots loading-xs" /> Esperando el inicio de sesión…</p>
             {late && !term && (
               <div role="status" className="alert alert-info alert-soft text-xs">

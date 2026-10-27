@@ -3,6 +3,7 @@ import { readFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { Account, AccountStatus } from '../shared/types'
+import { scanCodexLimit } from './codex'
 import { buildEnv } from './env'
 import { parseLimitText } from './limit'
 import type { CopyRecord } from './store'
@@ -141,19 +142,34 @@ const run = promisify(execFile)
 const cache = new Map<string, { at: number; status: AccountStatus }>()
 const TTL = 60_000
 
-/** Official `claude auth status --json` + transcript scan; cached 60s unless `refresh`. */
-export async function accountStatus(a: Account, refresh = false, copied: Record<string, CopyRecord> = {}): Promise<AccountStatus> {
+/** Official `claude auth status --json` (or `codex login status`) + transcript scan; cached 60s unless `refresh`. `probe: false` = do not run the CLI (it would write into an imported dir): loggedIn stays null, transcripts are still read. */
+export async function accountStatus(a: Account, refresh = false, copied: Record<string, CopyRecord> = {}, probe = true): Promise<AccountStatus> {
   const hit = cache.get(a.id)
   if (hit && !refresh && Date.now() - hit.at < TTL) return hit.status
-  if (a.provider !== 'claude') return { accountId: a.id, loggedIn: null, tokens5h: 0 } // codex unverified
-  let auth: ReturnType<typeof parseAuthStatus> = { loggedIn: null }
-  try {
-    const { stdout } = await run(providers[a.provider].bin, ['auth', 'status', '--json'], { env: buildEnv(a), timeout: 10_000 })
-    auth = parseAuthStatus(stdout)
-  } catch (e: any) {
-    if (typeof e?.stdout === 'string') auth = parseAuthStatus(e.stdout)
+  if (a.provider === 'codex') {
+    // `codex login status`: exit 0 = logged in, exit 1 + "Not logged in" = not; it prints no email or plan. No token usage is read for Codex.
+    let loggedIn: boolean | null = null
+    if (probe)
+      try {
+        await run(providers.codex.bin, providers.codex.statusArgs, { env: buildEnv(a), timeout: 10_000 })
+        loggedIn = true
+      } catch (e: any) {
+        if (e?.code === 1) loggedIn = false
+      }
+    const limited = scanCodexLimit(a.configDir, Date.now(), copied)
+    const status: AccountStatus = { accountId: a.id, loggedIn, tokens5h: 0, ...(limited ? { limited } : {}), ...(probe ? {} : { unchecked: true }) }
+    cache.set(a.id, { at: Date.now(), status })
+    return status
   }
-  const status: AccountStatus = { accountId: a.id, ...auth, ...(await scanUsage(a.configDir, Date.now(), copied)) }
+  let auth: ReturnType<typeof parseAuthStatus> = { loggedIn: null }
+  if (probe)
+    try {
+      const { stdout } = await run(providers[a.provider].bin, providers[a.provider].statusArgs, { env: buildEnv(a), timeout: 10_000 })
+      auth = parseAuthStatus(stdout)
+    } catch (e: any) {
+      if (typeof e?.stdout === 'string') auth = parseAuthStatus(e.stdout)
+    }
+  const status: AccountStatus = { accountId: a.id, ...auth, ...(await scanUsage(a.configDir, Date.now(), copied)), ...(probe ? {} : { unchecked: true }) }
   cache.set(a.id, { at: Date.now(), status })
   return status
 }

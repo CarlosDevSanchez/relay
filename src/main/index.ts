@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserWindow, Notification, app, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import type { Account, Candidate, HandoffRequest, StartRequest, StartResult } from '../shared/types'
+import { findRollout, parseCodexLimitLine, watchCodexNewSession } from './codex'
 import { buildEnv, plainEnv } from './env'
 import { buildCatalog } from './catalog'
 import { detectCli } from './cli'
@@ -12,7 +13,7 @@ import { copySessionForHandoff, runHandoff, sourceExists } from './handoff'
 import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty } from './pty'
 import { providers } from './providers'
 import { type LimitInfo, scheduleAt, pickRebind, watchLimits, watchNewSession } from './limit'
-import { candidateDirs, canProbe, claudeProjectDir, isDefaultInstall } from './paths'
+import { candidateDirs, canProbe, claudeProjectDir, dirProvider, isDefaultInstall } from './paths'
 import { loadPrefs, savePrefs } from './prefs'
 import { drifted, linkAccount, nextFlag, sharedDir, unlinkAccount } from './shared'
 import { listSessions } from './sessions'
@@ -26,7 +27,7 @@ let win: BrowserWindow
 const list = (): Account[] =>
   loadAccounts(HOME).map((a) => {
     const d = a.sharedMemory ? drifted(HOME, a) : []
-    return { ...a, managed: isManaged(HOME, a), ...(isDefaultInstall(a.configDir, homedir()) ? { defaultInstall: true } : {}), ...(d.length ? { drift: d } : {}) }
+    return { ...a, managed: isManaged(HOME, a), ...(isDefaultInstall(a.configDir, homedir(), a.provider) ? { defaultInstall: true } : {}), ...(d.length ? { drift: d } : {}) }
   })
 
 const send = (ch: string, ...a: unknown[]): void => {
@@ -63,7 +64,8 @@ const ptyExit = (id: number, code: number): void => {
 }
 
 function onLimit(ptyId: number, a: Account, sessionId: string, h: LimitInfo): void {
-  notify(`${a.label} llegó a su límite · se reinicia ${h.resetText}`, () => send('tab:focus', ptyId))
+  if (h.modelSpecific) notify(`${a.label}: se agotó el límite de uso de un modelo`, () => send('tab:focus', ptyId))
+  else notify(`${a.label} llegó a su límite · se reinicia ${h.resetText}`, () => send('tab:focus', ptyId))
   send('limit:hit', { ptyId, accountId: a.id, sessionId, ...h })
 }
 
@@ -75,8 +77,8 @@ async function start(req: StartRequest, message?: string): Promise<StartResult> 
   let args: string[] = p.loginArgs
   let dir = cwd
   if (mode === 'new') {
-    sid = randomUUID()
-    args = p.newArgs(sid)
+    sid = p.assignsId ? randomUUID() : undefined // Codex assigns its own id: discovered below from the new rollout
+    args = p.newArgs(sid ?? '')
   } else if (mode === 'resume') {
     if (!sid) throw new Error('sessionId required')
     args = p.resumeArgs(sid, message)
@@ -94,12 +96,18 @@ async function start(req: StartRequest, message?: string): Promise<StartResult> 
     ptyData,
     ptyExit
   )
-  // live quota detection: tail the session transcript from its current end; follow /clear (new session id)
-  if (sid && a.provider === 'claude') {
+  // live quota detection: tail the session transcript from its current end; follow /clear (new session id).
+  // Codex new sessions have no id yet: the first new rollout of this cwd binds the tab (setPtySession + 'pty:session').
+  if (mode !== 'login') {
+    const codex = a.provider === 'codex'
     const projDir = claudeProjectDir(a.configDir, dir)
-    const tail = (id: string) => watchLimits(join(projDir, `${id}.jsonl`), (h) => onLimit(ptyId, a, id, h))
+    const none = { check: () => undefined, stop: () => undefined }
+    const tail = (id: string) => {
+      const file = codex ? findRollout(a.configDir, id) : join(projDir, `${id}.jsonl`)
+      return file ? watchLimits(file, (h) => onLimit(ptyId, a, id, h), Date.now, codex ? parseCodexLimitLine : undefined) : none
+    }
     let cur = sid
-    let t = tail(cur)
+    let t = cur ? tail(cur) : none
     const cands = new Set<string>()
     let timer: NodeJS.Timeout | undefined
     const decide = (): void => {
@@ -118,10 +126,12 @@ async function start(req: StartRequest, message?: string): Promise<StartResult> 
         send('pty:session', ptyId, d.id)
       }
     }
-    const nw = watchNewSession(projDir, Date.now(), (id) => id === cur || wasBound(id), (ids) => {
+    const onNew = (ids: string[]): void => {
       ids.forEach((i) => cands.add(i))
       timer ??= setTimeout(decide, 1500) // let a second candidate show up before deciding
-    })
+    }
+    const skip = (id: string): boolean => id === cur || wasBound(id)
+    const nw = codex ? watchCodexNewSession(a.configDir, dir, Date.now(), skip, onNew) : watchNewSession(projDir, Date.now(), skip, onNew)
     watchers.set(ptyId, { stop: () => (t.stop(), nw.stop(), clearTimeout(timer)) })
   }
   return { ptyId, ...(sid ? { sessionId: sid } : {}) }
@@ -142,10 +152,11 @@ function handle(): void {
     const home = homedir()
     return Promise.all(
       candidateDirs(home, loadAccounts(HOME).map((a) => a.configDir)).map(async (dir): Promise<Candidate> => {
-        const def = isDefaultInstall(dir, home) ? { default: true } : {}
-        if (!canProbe(dir, home)) return { dir, loggedIn: null, unchecked: true, ...def } // probing would write into it
-        const s = await accountStatus({ id: `cand:${dir}`, label: '', provider: 'claude', configDir: dir }, true)
-        return { dir, loggedIn: s.loggedIn, ...def, ...(s.email ? { email: s.email } : {}), ...(s.plan ? { plan: s.plan } : {}) }
+        const provider = dirProvider(dir)
+        const def = provider === 'claude' && isDefaultInstall(dir, home) ? { default: true } : {}
+        if (!canProbe(dir, home, provider)) return { dir, provider, loggedIn: null, unchecked: true, ...def } // probing would write into it
+        const s = await accountStatus({ id: `cand:${dir}`, label: '', provider, configDir: dir }, true)
+        return { dir, provider, loggedIn: s.loggedIn, ...def, ...(s.email ? { email: s.email } : {}), ...(s.plan ? { plan: s.plan } : {}) }
       })
     )
   })
@@ -157,7 +168,7 @@ function handle(): void {
   ipcMain.handle('accounts:remove', async (_e, id: string) => {
     const acc = checkAccountId(id, loadAccounts(HOME))
     // an imported dir must be left self-contained: links -> real copies first (abort on failure)
-    if (acc.provider === 'claude' && !isManaged(HOME, acc) && existsSync(acc.configDir)) {
+    if (!isManaged(HOME, acc) && existsSync(acc.configDir)) {
       await killAccountPtys(id)
       const r = unlinkAccount(HOME, acc)
       if (r.errors.length) throw new Error(`No se pudo restaurar la memoria local: ${r.errors.join('; ')}`)
@@ -170,7 +181,8 @@ function handle(): void {
   })
   ipcMain.handle('accounts:status', (_e, id: string, refresh?: boolean) => {
     const a = checkAccountId(id, loadAccounts(HOME))
-    return accountStatus(a, refresh === true, loadCopies(HOME)[a.id])
+    // an imported dir is only asked when the probe cannot create files in it (see canProbe); Relay's own dirs are always asked
+    return accountStatus(a, refresh === true, loadCopies(HOME)[a.id], isManaged(HOME, a) || canProbe(a.configDir, homedir(), a.provider))
   })
   ipcMain.handle('shared:set', async (_e, id: unknown, enabled: unknown) => {
     const a = checkSharedToggle(id, enabled, loadAccounts(HOME))
@@ -183,7 +195,7 @@ function handle(): void {
         defaultId: 0,
         cancelId: 0,
         message: `Activar memoria compartida en "${a.label}" (${a.configDir})?`,
-        detail: `Se reemplazarán por enlaces a ~/.relay/shared: CLAUDE.md, skills/, agents/, commands/ y projects/*/memory de tus proyectos. Su contenido se mueve a la memoria compartida y lo que choque se guarda en ~/.relay/backups/${a.id}/<fecha>/. No se tocan credenciales, ajustes ni historial. Al desactivar o quitar la cuenta se restauran copias reales.`
+        detail: `Se reemplazarán por enlaces a ~/.relay/shared: ${a.provider === 'codex' ? 'AGENTS.md (solo ese archivo)' : 'CLAUDE.md, skills/, agents/, commands/ y projects/*/memory de tus proyectos'}. Su contenido se mueve a la memoria compartida y lo que choque se guarda en ~/.relay/backups/${a.id}/<fecha>/. No se tocan credenciales, ajustes ni historial. Al desactivar o quitar la cuenta se restauran copias reales.`
       })
       if (c.response !== 1) return { accounts: list(), report: { linked: [], backups: [], notes: ['Cancelado'], errors: [] } }
     }
@@ -230,7 +242,7 @@ function handle(): void {
       defaultId: 0,
       cancelId: 0,
       message: `Instalar el CLI oficial (${provider})`,
-      detail: `Se ejecutará el instalador oficial de Anthropic en una terminal visible:\n\n${c.display}\n\nRelay no descarga nada por sí mismo.`
+      detail: `Se ejecutará el instalador oficial de ${provider === 'codex' ? 'OpenAI (Homebrew o npm)' : 'Anthropic'} en una terminal visible:\n\n${c.display}\n\nRelay no descarga nada por sí mismo.`
     })
     if (r.response !== 1) return null
     return spawnPty(c.bin, c.args, homedir(), plainEnv(), '__install__', undefined, ptyData, ptyExit)

@@ -56,6 +56,8 @@ export interface LimitInfo {
   kind: string
   resetText: string
   resetAt: number | null
+  /** Codex: limit of one model only (no reset time); another model still works, so no account switch is offered */
+  modelSpecific?: boolean
 }
 
 /** Text of a rate_limit message -> kind + reset; null when it is not one. */
@@ -144,11 +146,11 @@ export function tailFile(file: string, onLines: (lines: string[]) => void): { ch
  * Calls `onHit` for each new rate_limit line. A repeat of the same limit is collapsed: same resetAt,
  * or (reset unparsed) same text within 5 minutes.
  */
-export function watchLimits(file: string, onHit: (h: LimitInfo) => void, now = Date.now): { check(): void; stop(): void } {
+export function watchLimits(file: string, onHit: (h: LimitInfo) => void, now = Date.now, parse: (line: string) => LimitInfo | null = parseLimitLine): { check(): void; stop(): void } {
   let last: { key: string; at: number } | undefined
   return tailFile(file, (lines) => {
     for (const l of lines) {
-      const h = parseLimitLine(l)
+      const h = parse(l)
       if (!h) continue
       const key = h.resetAt !== null ? String(h.resetAt) : h.resetText
       if (last?.key === key && (h.resetAt !== null || now() - last.at < 300_000)) continue

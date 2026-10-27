@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync,
 import { join, resolve } from 'node:path'
 import type { Account, ProviderId } from '../shared/types'
 import type { CopyResult } from './handoff'
+import { rolloutFiles } from './codex'
 import { encodeCwd } from './paths'
 
 function readJson<T>(file: string, fallback: T): T {
@@ -77,7 +78,7 @@ export interface CopyRecord {
   sib: string[]
 }
 
-/** Sessions copied INTO an account: {accountId: {sessionId: CopyRecord}}; those lines are not that account's usage. */
+/** Sessions copied INTO an account: {accountId: {sessionId: CopyRecord}}; those lines are not that account's usage / limit. */
 export const loadCopies = (home: string): Record<string, Record<string, CopyRecord>> => readJson(join(home, 'copies.json'), {})
 
 /** No-op when nothing was appended. A replaced transcript voids the older ranges. */
@@ -104,7 +105,9 @@ export function pruneCopies(home: string): void {
     } catch {
       // no projects dir: every record is stale
     }
-    const kept = Object.entries(all[a.id] ?? {}).filter(([sid]) => dirs.some((d) => existsSync(join(proj, d, `${sid}.jsonl`))))
+    const ids = a.provider === 'codex' ? new Set(rolloutFiles(a.configDir).map((f) => f.id)) : undefined // one walk per account
+    const has = (sid: string): boolean => (ids ? ids.has(sid.toLowerCase()) : dirs.some((d) => existsSync(join(proj, d, `${sid}.jsonl`))))
+    const kept = Object.entries(all[a.id] ?? {}).filter(([sid]) => has(sid))
     if (kept.length) out[a.id] = Object.fromEntries(kept)
   }
   if (JSON.stringify(out) !== JSON.stringify(all)) writeJson(join(home, 'copies.json'), out)

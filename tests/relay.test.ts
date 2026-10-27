@@ -144,7 +144,7 @@ describe('handoff', () => {
     expect(existsSync(join(x.dst, '..', SID, 'subagents', 'evil'))).toBe(false)
     expect(() => copySessionForHandoff(x.from, x.to, x.cwd, '../../x')).toThrow(/Invalid session id/)
     expect(() => copySessionForHandoff(x.from, x.to, x.cwd, 'ffffffff-2222-3333-4444-555555555555')).toThrow(/no transcript/)
-    expect(() => copySessionForHandoff({ ...x.from, provider: 'codex' }, x.to, x.cwd, SID)).toThrow(/Claude/)
+    expect(() => copySessionForHandoff({ ...x.from, provider: 'codex' }, x.to, x.cwd, SID)).toThrow(/Claude ↔ Codex/)
     // symlinked source / target are refused
     const y = setup()
     const real = join(tmp(), 'real.jsonl')
@@ -468,8 +468,11 @@ describe('handoff prefs and resume args', () => {
     const id = '11111111-1111-1111-1111-111111111111'
     expect(providers.claude.resumeArgs(id)).toEqual(['--resume', id])
     expect(providers.claude.resumeArgs(id, 'a b; rm -rf /')).toEqual(['--resume', id, 'a b; rm -rf /'])
-    expect(providers.codex.resumePrompt).toBe(false)
-    expect(providers.codex.resumeArgs(id, 'hola')).toEqual(['resume', id])
+    expect(providers.codex.resumePrompt).toBe(true)
+    expect(providers.codex.resumeArgs(id)).toEqual(['resume', id])
+    expect(providers.codex.resumeArgs(id, 'a b; rm -rf /')).toEqual(['resume', id, 'a b; rm -rf /'])
+    expect(providers.codex.assignsId).toBe(false)
+    expect(providers.codex.statusArgs).toEqual(['login', 'status'])
   })
 })
 

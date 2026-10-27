@@ -1,16 +1,19 @@
 import { cpSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
-import type { Account, SharedReport } from '../shared/types'
+import type { Account, ProviderId, SharedReport } from '../shared/types'
 import { encodeCwd } from './paths'
 
 /**
  * Shared global memory: `<home>/shared/<item>` is the single copy, each opted-in account dir gets ABSOLUTE symlinks to it.
  * ONLY the whitelist below is ever touched (never credentials, .claude.json, settings, history, transcripts, plugins...).
- * Codex (F5) can add `AGENTS.md` to TOP later.
+ * Codex accounts only ever get `AGENTS.md` (its global instructions file, verified read through a symlink); there is no Codex memory/skills sharing.
  * Merge is ONE level deep: a child present on both sides with different content (e.g. `memory/MEMORY.md`, the index) keeps shared's
  * and the account's copy goes to the backup. Symlinked children are moved verbatim, so a RELATIVE one may dangle in its new place.
  */
-const TOP: [string, boolean][] = [['CLAUDE.md', false], ['skills', true], ['agents', true], ['commands', true]] // [rel, isDir]
+const TOP: Record<ProviderId, [string, boolean][]> = {
+  claude: [['CLAUDE.md', false], ['skills', true], ['agents', true], ['commands', true]], // [rel, isDir]
+  codex: [['AGENTS.md', false]]
+}
 
 export const sharedDir = (home: string): string => join(home, 'shared')
 
@@ -65,7 +68,6 @@ const points = (link: string, target: string): boolean => lst(link)?.isSymbolicL
 const stamp = (): string => new Date().toISOString().replace(/[:.]/g, '-')
 
 function setup(home: string, a: Account): { cfg: string; shared: string } {
-  if (a.provider !== 'claude') throw new Error('Memoria compartida: solo cuentas Claude')
   mkdirSync(sharedDir(home), { recursive: true })
   if (lst(sharedDir(home))?.isSymbolicLink()) throw new Error(`Refusing ${sharedDir(home)}: it is a symlink`)
   return { cfg: realpathSync(a.configDir), shared: realpathSync(sharedDir(home)) }
@@ -118,7 +120,7 @@ export function linkAccount(home: string, a: Account, projects: string[]): Share
   const { cfg, shared } = setup(home, a)
   const backups = join(home, 'backups', a.id, stamp())
   const rep: SharedReport = { linked: [], backups: [], notes: [], errors: [] }
-  const items: [string, boolean][] = [...TOP, ...projects.map((p): [string, boolean] => [`projects/${encodeCwd(p)}/memory`, true])]
+  const items: [string, boolean][] = [...TOP[a.provider], ...(a.provider === 'claude' ? projects.map((p): [string, boolean] => [`projects/${encodeCwd(p)}/memory`, true]) : [])]
   for (const [rel, isDir] of items) {
     try {
       linkItem(cfg, shared, backups, rel, isDir, rep)
@@ -134,13 +136,15 @@ export function unlinkAccount(home: string, a: Account): SharedReport {
   const { cfg, shared } = setup(home, a)
   const rep: SharedReport = { linked: [], backups: [], notes: [], errors: [] }
   let projs: string[] = []
-  try {
-    // only real dirs can hold our links (.DS_Store files and symlinked project dirs cannot; not an error)
-    projs = readdirSync(join(cfg, 'projects')).filter((n) => lst(join(cfg, 'projects', n))?.isDirectory())
-  } catch {
-    // no projects dir
+  if (a.provider === 'claude') {
+    try {
+      // only real dirs can hold our links (.DS_Store files and symlinked project dirs cannot; not an error)
+      projs = readdirSync(join(cfg, 'projects')).filter((n) => lst(join(cfg, 'projects', n))?.isDirectory())
+    } catch {
+      // no projects dir
+    }
   }
-  for (const rel of [...TOP.map(([r]) => r), ...projs.map((p) => `projects/${p}/memory`)]) {
+  for (const rel of [...TOP[a.provider].map(([r]) => r), ...projs.map((p) => `projects/${p}/memory`)]) {
     try {
       const t = guard(cfg, rel)
       const s = join(shared, rel)
@@ -168,9 +172,9 @@ export function unlinkAccount(home: string, a: Account): SharedReport {
 export function drifted(home: string, a: Account): string[] {
   try {
     const shared = realpathSync(sharedDir(home))
-    return TOP.map(([r]) => r).filter((rel) => !points(join(a.configDir, rel), join(shared, rel)))
+    return TOP[a.provider].map(([r]) => r).filter((rel) => !points(join(a.configDir, rel), join(shared, rel)))
   } catch {
-    return TOP.map(([r]) => r)
+    return TOP[a.provider].map(([r]) => r)
   }
 }
 

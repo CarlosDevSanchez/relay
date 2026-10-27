@@ -1,4 +1,6 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
+import type { ProviderId } from '../shared/types'
 
 // ---- inline SVG icons (no icon dependency) ----
 const Svg = ({ d, size = 14 }: { d: string; size?: number }) => (
@@ -49,16 +51,25 @@ export function Dropdown({ trigger, items, title, align = 'right', btnClass = 'b
 }
 
 // ---- modal (native <dialog>, daisyUI `modal`): one component for every dialog ----
+// Open modal dialogs, oldest first: a top-layer popover is inert while a modal dialog is open, so toasts render inside the topmost one.
+let openDialogs: HTMLDialogElement[] = []
+const dialogSubs = new Set<() => void>()
+const setOpenDialogs = (f: (l: HTMLDialogElement[]) => HTMLDialogElement[]) => ((openDialogs = f(openDialogs)), dialogSubs.forEach((cb) => cb()))
+const topDialog = () => openDialogs.at(-1) ?? null
+const subscribeDialogs = (cb: () => void) => (dialogSubs.add(cb), () => void dialogSubs.delete(cb))
+
 export function Dialog({ label, onClose, children, boxClass = '' }: { label: string; onClose(): void; children: ReactNode; boxClass?: string }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     const d = ref.current
-    if (!d || d.open) return
-    d.showModal()
-    // showModal() focuses the first button; a dialog that appears on its own must start on its safe element
-    d.querySelector<HTMLElement>('[data-autofocus]')?.focus()
-    // toasts live in the top layer too: lift them above the dialog just opened
-    document.querySelectorAll<HTMLElement>('[popover]:popover-open').forEach((p) => (p.hidePopover(), p.showPopover()))
+    if (!d) return
+    if (!d.open) {
+      d.showModal()
+      // showModal() focuses the first button; a dialog that appears on its own must start on its safe element
+      d.querySelector<HTMLElement>('[data-autofocus]')?.focus()
+    }
+    setOpenDialogs((l) => [...l, d])
+    return () => setOpenDialogs((l) => l.filter((x) => x !== d))
   }, [])
   return (
     <dialog ref={ref} aria-label={label} className="modal" onClose={onClose}>
@@ -89,18 +100,19 @@ export function useToasts() {
 }
 export type Toasts = ReturnType<typeof useToasts>
 const ALERT = { success: 'alert-success', error: 'alert-error', info: 'alert-info' }
-/** Rendered once; a manual popover lives in the top layer, so it shows above any open <dialog>. */
+/** Rendered once: a manual popover (top layer) normally, portaled into the topmost open dialog while one is open (a popover under a modal dialog is inert). */
 export function ToastStack({ t }: { t: Toasts }) {
   const ref = useRef<HTMLDivElement>(null)
+  const host = useSyncExternalStore(subscribeDialogs, topDialog)
   const n = t.list.length
   useEffect(() => {
     const el = ref.current
-    if (!el) return
+    if (!el || host) return
     if (el.matches(':popover-open')) el.hidePopover()
-    if (n) el.showPopover() // re-shown on every change: last shown = topmost
-  }, [n])
-  return (
-    <div ref={ref} popover="manual" className="toast toast-end toast-bottom max-w-md overflow-visible bg-transparent">
+    if (n) el.showPopover()
+  }, [n, host])
+  const stack = (
+    <div ref={ref} {...(host ? {} : { popover: 'manual' as const })} className="toast toast-end toast-bottom max-w-md overflow-visible bg-transparent">
       {t.list.map((x) => (
         <div key={x.id} role="alert" className={`alert ${ALERT[x.kind]} items-start text-sm shadow-lg`}>
           <span className="min-w-0 whitespace-pre-wrap break-words">{x.text}</span>
@@ -109,6 +121,7 @@ export function ToastStack({ t }: { t: Toasts }) {
       ))}
     </div>
   )
+  return host ? createPortal(stack, host) : stack
 }
 
 // ---- in-app prompt/confirm (Electron has no window.prompt/confirm/alert) ----
@@ -120,23 +133,34 @@ interface Req {
   danger?: boolean
   /** focus Cancelar instead of the confirm button (switching/destructive confirms) */
   safe?: boolean
-  resolve(v: string | boolean | null): void
+  /** optional dropdown next to the text input (add-account dialog: provider) */
+  choice?: { label: string; options: [value: string, label: string][]; initial: string }
+  resolve(v: string | boolean | null | { text: string; choice: string }): void
 }
 
-function ModalView({ req, done }: { req: Req; done(v: string | boolean | null): void }) {
+function ModalView({ req, done }: { req: Req; done(v: Parameters<Req['resolve']>[0]): void }) {
   const [text, setText] = useState(req.input?.initial ?? '')
+  const [pick, setPick] = useState(req.choice?.initial ?? '')
   const ok = !req.input || text.trim() !== ''
   const ref = useRef<HTMLInputElement>(null)
   useEffect(() => ref.current?.select(), [])
   return (
     <Dialog label={req.title} onClose={() => done(req.input ? null : false)}>
-      <form onSubmit={(e) => (e.preventDefault(), ok && done(req.input ? text.trim() : true))}>
+      <form onSubmit={(e) => (e.preventDefault(), ok && done(req.choice ? { text: text.trim(), choice: pick } : req.input ? text.trim() : true))}>
         <h3 className="text-base font-semibold">{req.title}</h3>
         {req.message && <p className="mt-2 whitespace-pre-wrap text-sm opacity-70">{req.message}</p>}
         {req.input && (
           <fieldset className="fieldset mt-3">
             <legend className="fieldset-legend">{req.input.label}</legend>
             <input ref={ref} className="input w-full" data-autofocus value={text} onChange={(e) => setText(e.target.value)} />
+          </fieldset>
+        )}
+        {req.choice && (
+          <fieldset className="fieldset mt-1">
+            <legend className="fieldset-legend">{req.choice.label}</legend>
+            <select className="select w-full" aria-label={req.choice.label} value={pick} onChange={(e) => setPick(e.target.value)}>
+              {req.choice.options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
           </fieldset>
         )}
         <div className="modal-action">
@@ -152,9 +176,12 @@ function ModalView({ req, done }: { req: Req; done(v: string | boolean | null): 
 
 export function useModal() {
   const [req, setReq] = useState<Req | null>(null)
-  const ask = (r: Omit<Req, 'resolve'>) => new Promise<string | boolean | null>((resolve) => setReq({ ...r, resolve }))
+  const ask = (r: Omit<Req, 'resolve'>) => new Promise<Parameters<Req['resolve']>[0]>((resolve) => setReq({ ...r, resolve }))
   return {
     prompt: (title: string, initial = '', label = 'Nombre') => ask({ title, input: { label, initial }, confirm: 'Aceptar' }) as Promise<string | null>,
+    /** name + provider; null = cancelled */
+    account: (title: string, initial: string, provider: ProviderId) =>
+      ask({ title, input: { label: 'Nombre', initial }, choice: { label: 'Proveedor', options: [['claude', 'Claude Code'], ['codex', 'Codex']], initial: provider }, confirm: 'Aceptar' }) as Promise<{ text: string; choice: ProviderId } | null>,
     confirm: (title: string, message: string, confirm = 'Aceptar', danger = false, safe = false) => ask({ title, message, confirm, danger, safe }).then((v) => v === true),
     node: req && <ModalView req={req} done={(v) => (req.resolve(v), setReq(null))} />
   }

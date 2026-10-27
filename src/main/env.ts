@@ -4,8 +4,8 @@ import type { Account } from '../shared/types'
 import { isDefaultInstall } from './paths'
 import { providers } from './providers'
 
-// Credentials/session vars inherited from the parent (possibly itself a Claude session) would override or confuse the account's own login.
-const STRIP = /^(ANTHROPIC_|CLAUDE_CODE_|CLAUDECODE$|CLAUDE_PID$)/
+// Credentials/session vars inherited from the parent (possibly itself a Claude or Codex session) would override or confuse the account's own login.
+const STRIP = /^(ANTHROPIC_|CLAUDE_CODE_|CLAUDECODE$|CLAUDE_PID$|OPENAI_API_KEY$|CODEX_(API_KEY|ACCESS_TOKEN|THREAD_ID)$)/
 
 /** Parent env without Claude credential/session vars, with Relay's PATH fix; no account config var. */
 export function plainEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {

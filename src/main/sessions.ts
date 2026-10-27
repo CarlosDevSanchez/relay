@@ -1,6 +1,7 @@
 import { closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Account, SessionInfo } from '../shared/types'
+import { listCodexSessions } from './codex'
 import { claudeProjectDir } from './paths'
 import { isSessionId } from './validate'
 
@@ -35,9 +36,8 @@ function head(file: string): string {
   }
 }
 
-// ponytail: Claude only; Codex session layout is unverified so it lists nothing.
 export function listSessions(accounts: Account[], cwd: string): SessionInfo[] {
-  const out: SessionInfo[] = []
+  const out: SessionInfo[] = listCodexSessions(accounts, cwd)
   for (const a of accounts.filter((x) => x.provider === 'claude')) {
     const dir = claudeProjectDir(a.configDir, cwd)
     let files: string[]

@@ -1,9 +1,9 @@
 import { realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
-import type { Account, HandoffRequest, StartRequest } from '../shared/types'
+import { type Account, CROSS_PROVIDER, type HandoffRequest, type StartRequest } from '../shared/types'
 import { type InstallCommand, installCommand, providers } from './providers'
 
-export const isSessionId = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f-]{36}$/i.test(s)
+export const isSessionId = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
 
 /** realpath of the deepest existing ancestor + the rest (the path itself may not exist yet). */
 const real = (p: string): string => {
@@ -56,6 +56,7 @@ export function checkHandoff(req: HandoffRequest, accounts: Account[], projects:
   if (!Number.isInteger(req?.ptyId)) throw new Error('Invalid pty id')
   const from = checkStart({ accountId: req?.fromAccountId, cwd: req?.cwd, mode: 'resume', sessionId: req?.sessionId }, accounts, projects)
   const to = checkStart({ accountId: req.toAccountId, cwd: req.cwd, mode: 'resume', sessionId: req.sessionId }, accounts, projects)
+  if (from.provider !== to.provider) throw new Error(CROSS_PROVIDER)
   return [from, to]
 }
 
@@ -65,11 +66,10 @@ export function checkReminder(resetAt: unknown, now = Date.now()): number {
   return resetAt
 }
 
-/** Toggle request from the renderer: known Claude account + real boolean. */
+/** Toggle request from the renderer: known account + real boolean. */
 export function checkSharedToggle(id: unknown, enabled: unknown, accounts: Account[]): Account {
   const a = checkAccountId(id, accounts)
   if (typeof enabled !== 'boolean') throw new Error('Invalid enabled')
-  if (a.provider !== 'claude') throw new Error('Memoria compartida: solo cuentas Claude')
   return a
 }
 

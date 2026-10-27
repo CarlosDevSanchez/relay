@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import type { Account, AccountStatus, Candidate, CliStatus } from '../shared/types'
+import type { Account, AccountStatus, Candidate, CliStatus, ProviderId } from '../shared/types'
 import { LoginPanel } from './Login'
 import { TerminalPane } from './Terminal'
-import { CLAUDE_MISSING, suggestLabel } from './status'
+import { CLAUDE_MISSING, guessProvider, missingMsg, suggestLabel } from './status'
 import type { Modal } from './ui'
 
 interface Props {
@@ -16,7 +16,7 @@ interface Props {
   installTab?: { ptyId: number; exited?: boolean }
   /** every pty that has exited (App subscribes for the whole app life, so a fast exit cannot be missed) */
   isExited(ptyId: number): boolean
-  createAccount(label: string, dir?: string): Promise<Account | undefined>
+  createAccount(label: string, dir?: string, provider?: ProviderId): Promise<Account | undefined>
   checkStatus(id: string): Promise<AccountStatus | undefined>
   next(): void
   addProject(): void
@@ -75,7 +75,7 @@ function AccountStep(p: Props) {
   const [busy, setBusy] = useState(false)
   const [cands, setCands] = useState<Candidate[] | null>(null)
   const [msg, setMsg] = useState('')
-  const missing = p.cli?.claude.installed === false
+  const missing = p.cli?.claude.installed === false && p.cli?.codex.installed !== true // new account: enabled when either CLI is installed; create() checks the chosen provider
   const st = accId ? p.statuses[accId] : undefined
 
   // re-fetched when the CLI state changes (e.g. right after the installer finished)
@@ -96,11 +96,14 @@ function AccountStep(p: Props) {
       setMsg(e instanceof Error ? e.message : String(e))
     }
   }
-  const create = async (label: string | null, dir?: string, thenLogin = false) => {
-    if (!label) return
+  /** `r` = name + provider chosen in the account dialog (null = cancelled) */
+  const create = async (r: { text: string; choice: ProviderId } | null, dir?: string, thenLogin = false) => {
+    if (!r?.text) return
+    setMsg('')
+    if (p.cli?.[r.choice].installed === false) return setMsg(missingMsg(r.choice))
     setBusy(true)
     try {
-      const a = await p.createAccount(label, dir)
+      const a = await p.createAccount(r.text, dir, r.choice)
       if (!a) return
       setAccId(a.id)
       if (thenLogin) await login(a.id)
@@ -116,7 +119,7 @@ function AccountStep(p: Props) {
   const ok = st?.loggedIn === true
   return (
     <section className="mt-8">
-      <h2 className="text-lg font-semibold">Agrega tu primera cuenta de Claude</h2>
+      <h2 className="text-lg font-semibold">Agrega tu primera cuenta</h2>
       {!accId && (
         <div className="mt-3 space-y-4">
           <div className="card card-border bg-base-100 shadow-sm">
@@ -124,7 +127,7 @@ function AccountStep(p: Props) {
               <b className="text-sm">Iniciar sesión con una cuenta nueva</b>
               <p className="text-sm opacity-70">Crea una carpeta de configuración propia y abre aquí el inicio de sesión oficial de Claude.</p>
               <div className="card-actions">
-                <button className="btn btn-primary" disabled={missing || busy} title={missing ? CLAUDE_MISSING : ''} onClick={async () => create(await p.modal.prompt('Nombre de la cuenta', 'Personal'), undefined, true)}>
+                <button className="btn btn-primary" disabled={missing || busy} title={missing ? CLAUDE_MISSING : ''} onClick={async () => create(await p.modal.account('Nombre de la cuenta', 'Personal', 'claude'), undefined, true)}>
                   {busy && <span className="loading loading-spinner loading-xs" />}Iniciar sesión con una cuenta nueva
                 </button>
               </div>
@@ -136,14 +139,14 @@ function AccountStep(p: Props) {
               <p className="text-sm opacity-70">Se referencia la carpeta tal cual; Relay no la copia ni la borra.</p>
               <div className="space-y-2">
                 {cands === null && <div className="flex items-center gap-2 text-sm opacity-70"><span className="loading loading-spinner loading-xs" /> Buscando carpetas…</div>}
-                {cands?.length === 0 && <div className="text-sm opacity-70">No se encontró ninguna carpeta ~/.claude*.</div>}
+                {cands?.length === 0 && <div className="text-sm opacity-70">No se encontró ninguna carpeta ~/.claude* ni ~/.codex*.</div>}
                 {cands?.map((c) => (
                   <div key={c.dir} className="lift flex items-center justify-between gap-3 rounded-box border border-base-300 px-3 py-2 hover:border-primary/50">
                     <span className="min-w-0 text-sm">
                       <span className="block truncate font-medium">{c.dir}</span>
-                      <span className="text-xs opacity-60">{c.default ? 'Instalación por defecto · ' : ''}{c.unchecked ? 'sin comprobar (se comprueba al importar)' : c.loggedIn === null ? 'desconocido' : c.loggedIn ? `${c.email ?? 'sesión iniciada'}${c.plan ? ` · ${c.plan}` : ''}` : 'sin sesión'}</span>
+                      <span className="text-xs opacity-60">{c.provider === 'codex' ? 'Codex · ' : ''}{c.default ? 'Instalación por defecto · ' : ''}{c.unchecked ? 'sin comprobar (se comprueba al importar)' : c.loggedIn === null ? 'desconocido' : c.loggedIn ? `${c.email ?? 'sesión iniciada'}${c.plan ? ` · ${c.plan}` : ''}` : 'sin sesión'}</span>
                     </span>
-                    <button className="btn btn-outline btn-sm shrink-0" disabled={missing || busy} onClick={async () => create(await p.modal.prompt('Nombre de la cuenta', suggestLabel(c.dir)), c.dir)}>
+                    <button className="btn btn-outline btn-sm shrink-0" disabled={p.cli?.[c.provider].installed === false || busy} onClick={async () => create(await p.modal.account('Nombre de la cuenta', suggestLabel(c.dir), c.provider), c.dir)}>
                       Importar
                     </button>
                   </div>
@@ -152,10 +155,10 @@ function AccountStep(p: Props) {
               <div className="card-actions">
                 <button
                   className="btn btn-ghost btn-sm"
-                  disabled={missing || busy}
+                  disabled={busy}
                   onClick={async () => {
                     const dir = await window.relay.accounts.pickDir()
-                    if (dir) await create(await p.modal.prompt('Nombre de la cuenta', suggestLabel(dir)), dir)
+                    if (dir) await create(await p.modal.account('Nombre de la cuenta', suggestLabel(dir), guessProvider(dir)), dir)
                   }}
                 >
                   Elegir otra carpeta…

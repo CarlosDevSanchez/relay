@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Account, AccountStatus, CliStatus, LimitHit, SessionInfo, SharedReport } from '../shared/types'
+import { type Account, type AccountStatus, type CliStatus, CROSS_PROVIDER, type LimitHit, type ProviderId, type SessionInfo, type SharedReport } from '../shared/types'
 import { LoginPanel } from './Login'
 import { Onboarding } from './Onboarding'
 import { Settings } from './Settings'
 import { Sidebar } from './Sidebar'
-import { CLAUDE_MISSING, suggestLabel } from './status'
+import { NAMES, guessProvider, missingMsg, suggestLabel } from './status'
 import { TerminalPane } from './Terminal'
 import { Dialog, Dot, Dropdown, IconChevron, IconFolder, ToastStack, ago, useModal, useToasts } from './ui'
 
@@ -48,7 +48,8 @@ export function App() {
   const exitedRef = useRef(new Set<number>())
   const [view, setView] = useState<'main' | 'settings'>('main')
   const [cli, setCli] = useState<CliStatus | null>(null)
-  const claudeMissing = cli?.claude.installed === false
+  const missing = (p: ProviderId | undefined) => !!p && cli?.[p]?.installed === false
+  const provOf = (id: string) => accounts.find((a) => a.id === id)?.provider
   const hit = hits[0]
   const hitTab = hit && tabs.find((x) => x.ptyId === hit.ptyId)
   const dropHit = (ptyId?: number) => {
@@ -113,8 +114,8 @@ export function App() {
       l.forEach((a) => void loadStatus(a.id))
       // offered once: answering "no" persists sharedMemory=false
       void (async () => {
-        for (const a of l.filter((x) => x.managed && x.provider === 'claude' && x.sharedMemory === undefined)) {
-          const on = await modal.confirm('Memoria compartida', `¿Compartir la memoria global (CLAUDE.md, skills, agents, commands) de "${a.label}" con tus otras cuentas? Su contenido se mueve a ~/.relay/shared; lo que choque se guarda en ~/.relay/backups.`, 'Compartir')
+        for (const a of l.filter((x) => x.managed && x.sharedMemory === undefined)) {
+          const on = await modal.confirm('Memoria compartida', `¿Compartir la memoria global (${a.provider === 'codex' ? 'AGENTS.md' : 'CLAUDE.md, skills, agents, commands'}) de "${a.label}" con tus otras cuentas de ${NAMES[a.provider]}? Su contenido se mueve a ~/.relay/shared; lo que choque se guarda en ~/.relay/backups.`, 'Compartir', false, true)
           try {
             const r = await window.relay.shared.set(a.id, on)
             setAccounts(r.accounts)
@@ -155,6 +156,10 @@ export function App() {
   // quota hit on a live session: ask the user (never switch by itself)
   useEffect(() => {
     const offHit = window.relay.onLimit((h) => {
+      if (h.modelSpecific) {
+        toasts.push('info', 'Se agotó el límite de uso de este modelo (no el de la cuenta): cambia de modelo con /model en el CLI. Relay no ofrece cambiar de cuenta.')
+        return
+      }
       setHits((hs) => [...hs.filter((x) => x.ptyId !== h.ptyId), h])
       accountsRef.current.forEach((a) => void loadStatus(a.id, true))
     })
@@ -164,11 +169,12 @@ export function App() {
     const offStale = window.relay.onStale((id) => setTabs((ts) => ts.map((t) => (t.ptyId === id ? { ...t, stale: true, hint: STALE } : t))))
     const offSession = window.relay.onSession((id, sessionId) => {
       const t = tabsRef.current.find((x) => x.ptyId === id)
-      setTabs((ts) => ts.map((x) => (x.ptyId === id ? { ...x, sessionId, hint: 'Sesión cambiada dentro del CLI.' } : x)))
+      const first = !t?.sessionId // Codex assigns the id of a new session: found from its transcript, not a change
+      setTabs((ts) => ts.map((x) => (x.ptyId === id ? { ...x, sessionId, hint: first ? '' : 'Sesión cambiada dentro del CLI.' } : x)))
       // the title is only known once the new transcript has a first prompt
       if (t) setTimeout(() => void window.relay.sessions(t.cwd).then((l) => {
         const title = (l.find((x) => x.id === sessionId)?.title ?? '(nueva sesión)').slice(0, 24)
-        setTabs((ts) => ts.map((x) => (x.ptyId === id && x.sessionId === sessionId ? { ...x, title, hint: `Sesión cambiada a ${title}` } : x)))
+        setTabs((ts) => ts.map((x) => (x.ptyId === id && x.sessionId === sessionId ? { ...x, title, ...(first ? {} : { hint: `Sesión cambiada a ${title}` }) } : x)))
       }), 3000)
     })
     const offSh = window.relay.onShared((m) => toasts.push('info', m))
@@ -189,7 +195,7 @@ export function App() {
 
   const start = (mode: 'new' | 'resume' | 'login', accountId: string, s?: SessionInfo, dir: string | null = cwd) =>
     run(async () => {
-      if (claudeMissing && accounts.find((a) => a.id === accountId)?.provider === 'claude') throw new Error(CLAUDE_MISSING)
+      if (missing(provOf(accountId))) throw new Error(missingMsg(provOf(accountId)!))
       if (!dir && mode !== 'login') throw new Error('Elige un proyecto primero')
       setActive(accountId)
       const r = await window.relay.pty.start({ accountId, cwd: dir ?? '', mode, ...(s ? { sessionId: s.id } : {}) })
@@ -205,10 +211,10 @@ export function App() {
       bump()
     })
 
-  const install = () =>
+  const install = (provider: ProviderId = 'claude') =>
     run(async () => {
-      const ptyId = await window.relay.cli.install('claude')
-      if (ptyId !== null) open({ ptyId, accountId: '', cwd: '', install: true, title: 'instalar claude' })
+      const ptyId = await window.relay.cli.install(provider)
+      if (ptyId !== null) open({ ptyId, accountId: '', cwd: '', install: true, title: `instalar ${provider}` })
     })
 
   const closeTab = (t: Tab) =>
@@ -219,10 +225,10 @@ export function App() {
     })
 
   /** managed accounts get shared memory by default; imported dirs are only referenced */
-  const createAccount = async (label: string, dir?: string): Promise<Account | undefined> => {
+  const createAccount = async (label: string, dir?: string, provider: ProviderId = 'claude'): Promise<Account | undefined> => {
     setError('')
     try {
-      const a = await window.relay.accounts.add(label, 'claude', dir)
+      const a = await window.relay.accounts.add(label, provider, dir)
       await refresh()
       if (a.managed) await setShared(a, true)
       setActive(a.id)
@@ -238,9 +244,9 @@ export function App() {
     run(async () => {
       const dir = imp ? await window.relay.accounts.pickDir() : undefined
       if (imp && !dir) return
-      const label = await modal.prompt('Nombre de la cuenta', imp && dir ? suggestLabel(dir) : '')
-      if (!label) return
-      const a = await createAccount(label, dir ?? undefined)
+      const r = await modal.account('Nombre de la cuenta', imp && dir ? suggestLabel(dir) : '', dir ? guessProvider(dir) : 'claude')
+      if (!r?.text) return
+      const a = await createAccount(r.text, dir ?? undefined, r.choice)
       if (a?.managed) await start('login', a.id)
     })
 
@@ -275,11 +281,11 @@ export function App() {
   // `ask`: the menu needs an in-app confirmation; the limit modal button is itself the confirmation
   const handoff = (to: Account, t: Tab | undefined = tab, ask = true, sink: (m: string) => void = setError) =>
     run(async () => {
-      if (!t?.sessionId || !t.cwd) throw new Error('Abre primero una sesión de Claude')
+      if (!t?.sessionId || !t.cwd) throw new Error('Abre primero una sesión con transcripción')
       if (t.stale) throw new Error(STALE)
       if (to.id === t.accountId) return
       if (ask) {
-        const auto = (await window.relay.prefs.get()).handoff.autoContinue && to.provider === 'claude'
+        const auto = (await window.relay.prefs.get()).handoff.autoContinue
         const msg = `Sesión "${t.title}" → cuenta "${to.label}". El proceso actual se detendrá y se reanudará la misma conversación en la otra cuenta.${auto ? `\nLa sesión continuará automáticamente en ${to.label}.` : ''}`
         if (!(await modal.confirm('Continuar en otra cuenta', msg, `Continuar en ${to.label}`, false, true))) return
       }
@@ -316,7 +322,7 @@ export function App() {
           statuses={statuses}
           projects={projects}
           modal={modal}
-          onInstall={install}
+          onInstall={() => void install('claude')}
           installTab={tabs.find((t) => t.install)}
           isExited={(id) => exitedRef.current.has(id)}
           createAccount={createAccount}
@@ -347,7 +353,7 @@ export function App() {
         projects={projects}
         cwd={cwd}
         sessions={sessMap}
-        claudeMissing={claudeMissing}
+        missing={missing}
         newSession={() => void newSession()}
         selectAccount={setActive}
         selectProject={setCwd}
@@ -377,14 +383,17 @@ export function App() {
           {tab?.accountId && !tab.login && (
             <div className="pb-1">
               <Dropdown
-                title={canHand ? 'Continuar esta sesión en otra cuenta' : 'Necesitas una sesión de Claude abierta y con transcripción'}
+                title={canHand ? 'Continuar esta sesión en otra cuenta' : 'Necesitas una sesión abierta y con transcripción'}
                 trigger={<>Continuar en otra cuenta <IconChevron open /></>}
                 btnClass="btn btn-sm btn-soft btn-primary"
-                items={targets.map((a) => {
-                  const s = statuses[a.id]
-                  const off = !canHand || s?.loggedIn !== true || !!s.limited
-                  return { label: `${a.label}${!s ? '' : s.loggedIn !== true ? ' (sin sesión)' : s.limited ? ` (limitada hasta ${s.limited.resetText})` : ''}`, disabled: off, onClick: () => void handoff(a) }
-                })}
+                items={[
+                  ...targets.map((a) => {
+                    const s = statuses[a.id]
+                    const off = !canHand || s?.loggedIn !== true || !!s.limited
+                    return { label: `${a.label}${!s ? '' : s.loggedIn !== true ? ' (sin sesión)' : s.limited ? ` (limitada hasta ${s.limited.resetText})` : ''}`, disabled: off, onClick: () => void handoff(a) }
+                  }),
+                  ...(accounts.some((a) => a.provider !== provOf(tab.accountId)) ? [{ label: CROSS_PROVIDER, disabled: true, onClick: () => undefined }] : [])
+                ]}
               />
             </div>
           )}
@@ -399,12 +408,12 @@ export function App() {
             <button className="btn btn-ghost btn-xs" onClick={() => void closeTab(tab)} title="Cierra la pestaña y detiene su proceso">Cerrar pestaña</button>
           </div>
         )}
-        {claudeMissing && (
-          <div role="alert" className="alert alert-warning alert-soft rounded-none py-1 text-xs">
-            <span>Claude Code no está instalado.</span>
-            <button className="btn btn-xs" onClick={install}>Instalar Claude Code</button>
+        {(['claude', 'codex'] as const).filter((p) => missing(p) && (p === 'claude' || accounts.some((a) => a.provider === p))).map((p) => (
+          <div key={p} role="alert" className="alert alert-warning alert-soft rounded-none py-1 text-xs">
+            <span>{NAMES[p]} no está instalado.</span>
+            <button className="btn btn-xs" onClick={() => void install(p)}>Instalar {NAMES[p]}</button>
           </div>
-        )}
+        ))}
         {tab?.hint && (
           <div role="status" className="alert alert-soft rounded-none py-1 text-xs">
             <span>{tab.hint}</span>
@@ -418,6 +427,7 @@ export function App() {
                 <div className="mx-auto max-w-xl">
                   <LoginPanel
                     ptyId={t.ptyId}
+                    provider={provOf(t.accountId) ?? 'claude'}
                     running={!t.exited}
                     {...(t.exited && t.checked ? { status: statuses[t.accountId] ?? { accountId: t.accountId, loggedIn: null, tokens5h: 0 } } : {})}
                     onRetry={() => void closeTab(t).then(() => start('login', t.accountId))}
@@ -451,7 +461,7 @@ export function App() {
                     </fieldset>
                   </div>
                   <div className="card-actions">
-                    <button className="btn btn-primary" disabled={claudeMissing} title={claudeMissing ? CLAUDE_MISSING : ''} onClick={() => void newSession()}>Nueva sesión</button>
+                    <button className="btn btn-primary" disabled={missing(provOf(active ?? ''))} title={missing(provOf(active ?? '')) ? missingMsg(provOf(active ?? '')!) : ''} onClick={() => void newSession()}>Nueva sesión</button>
                     <button className="btn btn-ghost" onClick={addProject}>Agregar proyecto…</button>
                   </div>
                 </div>
@@ -460,8 +470,8 @@ export function App() {
                 <ul className="menu mt-4 w-full p-0">
                   <li className="menu-title">Sesiones recientes</li>
                   {recent.map(({ p, s }) => (
-                    <li key={`${s.accountId}${s.id}`} className={claudeMissing ? 'menu-disabled' : ''}>
-                      <button disabled={claudeMissing} onClick={() => (setCwd(p), void start('resume', s.accountId, s, p))} className="flex-col items-start gap-0 text-left">
+                    <li key={`${s.accountId}${s.id}`} className={missing(provOf(s.accountId)) ? 'menu-disabled' : ''}>
+                      <button disabled={missing(provOf(s.accountId))} onClick={() => (setCwd(p), void start('resume', s.accountId, s, p))} className="flex-col items-start gap-0 text-left">
                         <span className="w-full truncate text-sm">{s.title}</span>
                         <span className="text-xs opacity-60">{base(p)} · {accLabel(s.accountId)} · {ago(s.mtimeMs)}</span>
                       </button>
@@ -480,7 +490,7 @@ export function App() {
           cli={cli}
           onClose={() => setView('main')}
           onDetect={detect}
-          onInstall={install}
+          onInstall={(p) => void install(p)}
           setShared={setShared}
           rename={rename}
           remove={remove}
@@ -520,7 +530,7 @@ export function App() {
                     <span className="text-xs opacity-60">
                       {!s ? '…' : s.loggedIn !== true ? 'sin sesión' : s.limited ? `limitada hasta ${s.limited.resetText}` : 'disponible'}
                     </span>
-                    {autoCont && !off && a.provider === 'claude' && <span className="text-xs text-primary">La sesión continuará automáticamente en {a.label}</span>}
+                    {autoCont && !off && <span className="text-xs text-primary">La sesión continuará automáticamente en {a.label}</span>}
                   </button>
                 )
               })}

@@ -127,7 +127,7 @@ describe('shared memory', () => {
     expect(r(join(sharedDir(home), 'CLAUDE.md'))).toBe('keep md')
   })
 
-  it('persists the toggle, validates it and refuses non-claude', () => {
+  it('persists the toggle and validates it', () => {
     const home = tmp()
     const m = addAccount(home, 'm', 'claude')
     setSharedMemory(home, m.id, true)
@@ -136,8 +136,7 @@ describe('shared memory', () => {
     expect(checkSharedToggle(m.id, false, accs).id).toBe(m.id)
     expect(() => checkSharedToggle(m.id, 'yes', accs)).toThrow(/enabled/)
     expect(() => checkSharedToggle('../x', true, accs)).toThrow(/account/)
-    expect(() => checkSharedToggle(m.id, true, [{ ...m, provider: 'codex' }])).toThrow(/Claude/)
-    expect(() => linkAccount(home, { ...m, provider: 'codex' }, [])).toThrow(/Claude/)
+    expect(checkSharedToggle(m.id, true, [{ ...m, provider: 'codex' }]).provider).toBe('codex')
   })
 
   it('partial link (projects/ is a symlink) can still be unlinked into real copies, and an imported dir survives removal', async () => {

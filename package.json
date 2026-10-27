@@ -2,6 +2,7 @@
   "name": "relay",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Continue AI coding CLI sessions across accounts without losing context",
   "main": "out/main/index.js",
   "scripts": {

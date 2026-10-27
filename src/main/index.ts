@@ -2,25 +2,26 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserWindow, app, dialog, ipcMain } from 'electron'
-import type { Account, HandoffRequest, StartRequest, StartResult } from '../shared/types'
+import type { HandoffRequest, StartRequest, StartResult } from '../shared/types'
 import { buildEnv } from './env'
-import { copySessionForHandoff } from './handoff'
+import { copySessionForHandoff, runHandoff } from './handoff'
 import { killPty, resizePty, spawnPty, writePty } from './pty'
 import { providers } from './providers'
 import { listSessions } from './sessions'
 import { addAccount, addProject, loadAccounts, loadProjects } from './store'
+import { checkHandoff, checkNewAccount, checkStart } from './validate'
 
 const HOME = join(homedir(), '.relay')
 let win: BrowserWindow
 
-const account = (id: string): Account => {
-  const a = loadAccounts(HOME).find((x) => x.id === id)
-  if (!a) throw new Error(`Unknown account ${id}`)
-  return a
+const send = (ch: string, ...a: unknown[]): void => {
+  if (!win.isDestroyed()) win.webContents.send(ch, ...a)
 }
 
-function start({ accountId, cwd, mode, sessionId }: StartRequest): StartResult {
-  const a = account(accountId)
+async function start(req: StartRequest): Promise<StartResult> {
+  const { cwd, mode, sessionId } = req
+  const a = checkStart(req, loadAccounts(HOME), loadProjects(HOME))
+  await killPty()
   const p = providers[a.provider]
   let sid = sessionId
   let args: string[] = []
@@ -40,17 +41,18 @@ function start({ accountId, cwd, mode, sessionId }: StartRequest): StartResult {
     args,
     dir,
     buildEnv(a),
-    (id, d) => win.webContents.send('pty:data', id, d),
-    (id, code) => win.webContents.send('pty:exit', id, code)
+    (id, d) => send('pty:data', id, d),
+    (id, code) => send('pty:exit', id, code)
   )
   return { ptyId, ...(sid ? { sessionId: sid } : {}) }
 }
 
 function handle(): void {
   ipcMain.handle('accounts:list', () => loadAccounts(HOME))
-  ipcMain.handle('accounts:add', (_e, label: string, provider, configDir?: string) =>
-    addAccount(HOME, label, provider, configDir)
-  )
+  ipcMain.handle('accounts:add', (_e, label: string, provider, configDir?: string) => {
+    checkNewAccount(label, provider, configDir)
+    return addAccount(HOME, label, provider, configDir)
+  })
   ipcMain.handle('accounts:pickDir', async () => {
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'showHiddenFiles'] })
     return r.canceled ? null : (r.filePaths[0] ?? null)
@@ -61,14 +63,19 @@ function handle(): void {
     const dir = r.canceled ? undefined : r.filePaths[0]
     return dir ? addProject(HOME, dir) : loadProjects(HOME)
   })
-  ipcMain.handle('sessions:list', (_e, cwd: string) => listSessions(loadAccounts(HOME), cwd))
+  ipcMain.handle('sessions:list', (_e, cwd: string) =>
+    loadProjects(HOME).includes(cwd) ? listSessions(loadAccounts(HOME), cwd) : []
+  )
   ipcMain.handle('pty:start', (_e, req: StartRequest) => start(req))
   ipcMain.on('pty:write', (_e, id: number, d: string) => writePty(id, d))
   ipcMain.on('pty:resize', (_e, id: number, c: number, r: number) => resizePty(id, c, r))
-  ipcMain.on('pty:kill', () => killPty())
   ipcMain.handle('handoff', (_e, req: HandoffRequest) => {
-    copySessionForHandoff(account(req.fromAccountId), account(req.toAccountId), req.cwd, req.sessionId)
-    return start({ accountId: req.toAccountId, cwd: req.cwd, mode: 'resume', sessionId: req.sessionId }) // kills old pty
+    const [from, to] = checkHandoff(req, loadAccounts(HOME), loadProjects(HOME))
+    return runHandoff(
+      killPty,
+      () => void copySessionForHandoff(from, to, req.cwd, req.sessionId),
+      () => start({ accountId: to.id, cwd: req.cwd, mode: 'resume', sessionId: req.sessionId })
+    )
   })
 }
 
@@ -86,11 +93,16 @@ app.whenReady().then(() => {
       sandbox: true
     }
   })
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url !== win.webContents.getURL()) e.preventDefault()
+  })
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadFile(join(__dirname, '../renderer/index.html'))
 })
 
+app.on('will-quit', () => void killPty())
+
 app.on('window-all-closed', () => {
-  killPty()
   app.quit()
 })

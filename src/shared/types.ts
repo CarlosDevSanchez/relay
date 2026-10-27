@@ -50,7 +50,6 @@ export interface RelayApi {
     start(req: StartRequest): Promise<StartResult>
     write(ptyId: number, data: string): void
     resize(ptyId: number, cols: number, rows: number): void
-    kill(ptyId: number): void
     onData(cb: (ptyId: number, data: string) => void): () => void
     onExit(cb: (ptyId: number, code: number) => void): () => void
   }

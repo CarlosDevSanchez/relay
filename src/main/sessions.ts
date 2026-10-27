@@ -2,8 +2,9 @@ import { closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Account, SessionInfo } from '../shared/types'
 import { claudeProjectDir } from './paths'
+import { isSessionId } from './validate'
 
-const HEAD_BYTES = 256 * 1024
+const HEAD_BYTES = 16 * 1024
 
 /** First real user prompt: skips meta lines and slash-command/caveat wrappers (start with `<`). */
 export function sessionTitle(jsonlHead: string): string {
@@ -41,7 +42,7 @@ export function listSessions(accounts: Account[], cwd: string): SessionInfo[] {
     const dir = claudeProjectDir(a.configDir, cwd)
     let files: string[]
     try {
-      files = readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
+      files = readdirSync(dir).filter((f) => f.endsWith('.jsonl') && isSessionId(f.slice(0, -6)))
     } catch {
       continue
     }
@@ -50,5 +51,8 @@ export function listSessions(accounts: Account[], cwd: string): SessionInfo[] {
       out.push({ id: f.slice(0, -6), title: sessionTitle(head(p)), mtimeMs: statSync(p).mtimeMs, accountId: a.id })
     }
   }
-  return out.sort((a, b) => b.mtimeMs - a.mtimeMs)
+  // same id on several accounts after a handoff: only the newest copy
+  const newest = new Map<string, SessionInfo>()
+  for (const s of out) if (s.mtimeMs > (newest.get(s.id)?.mtimeMs ?? -1)) newest.set(s.id, s)
+  return [...newest.values()].sort((a, b) => b.mtimeMs - a.mtimeMs)
 }

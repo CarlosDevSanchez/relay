@@ -19,7 +19,6 @@ const api: RelayApi = {
     start: (req) => ipcRenderer.invoke('pty:start', req),
     write: (id, d) => ipcRenderer.send('pty:write', id, d),
     resize: (id, c, r) => ipcRenderer.send('pty:resize', id, c, r),
-    kill: (id) => ipcRenderer.send('pty:kill', id),
     onData: (cb) => sub('pty:data', cb),
     onExit: (cb) => sub('pty:exit', cb)
   },

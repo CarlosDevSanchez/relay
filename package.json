@@ -9,6 +9,7 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "postinstall": "node node_modules/electron/install.js && electron-rebuild -f -w node-pty"
   },
   "trustedDependencies": ["electron", "node-pty", "esbuild"],
@@ -20,6 +21,7 @@
   "devDependencies": {
     "@electron/rebuild": "4.2.1",
     "@tailwindcss/vite": "4.3.3",
+    "@vitest/coverage-v8": "5.0.5",
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",

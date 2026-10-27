@@ -15,7 +15,7 @@ interface Props {
   /** the installer tab (App owns it), shown here while it runs */
   installTab?: { ptyId: number; exited?: boolean }
   /** every pty that has exited (App subscribes for the whole app life, so a fast exit cannot be missed) */
-  exitedPtys: number[]
+  isExited(ptyId: number): boolean
   createAccount(label: string, dir?: string): Promise<Account | undefined>
   checkStatus(id: string): Promise<AccountStatus | undefined>
   next(): void
@@ -71,7 +71,7 @@ function AccountStep(p: Props) {
 
   // re-fetched when the CLI state changes (e.g. right after the installer finished)
   useEffect(() => void window.relay.accounts.candidates().then(setCands).catch(() => setCands([])), [p.cli?.claude.installed])
-  const exited = pty !== null && p.exitedPtys.includes(pty)
+  const exited = pty !== null && p.isExited(pty)
   useEffect(() => {
     if (!exited) return
     setPty(null)

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { isDefaultInstall } from './paths'
 import type { Account, McpReport, McpServer } from '../shared/types'
 
 const obj = (v: unknown): Record<string, unknown> | undefined => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined)
@@ -34,13 +35,13 @@ export function extractServers(raw: unknown, scope: McpServer['scope'], project?
   })
 }
 
-/** Reads `<configDir>/.claude.json` (user + per-project local scope) and `<project>/.mcp.json`; never starts a server. */
-export function mcpReport(accounts: Account[], projects: string[]): McpReport {
+/** Reads `<configDir>/.claude.json` (`~/.claude.json` for the default install; user + per-project local scope) and `<project>/.mcp.json`; never starts a server. */
+export function mcpReport(accounts: Account[], projects: string[], home: string): McpReport {
   return {
     accounts: accounts
       .filter((a) => a.provider === 'claude')
       .map((a) => {
-        const j = obj(readJson(join(a.configDir, '.claude.json')))
+        const j = obj(readJson(join(isDefaultInstall(a.configDir, home) ? home : a.configDir, '.claude.json')))
         const byProject = obj(j?.projects)
         return {
           accountId: a.id,

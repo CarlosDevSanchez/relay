@@ -86,7 +86,7 @@ describe('mcp', () => {
     w(join(other, '.mcp.json'), '{not json')
     const broken = tmp()
     w(join(broken, '.claude.json'), 'nope')
-    const r = mcpReport([acct(cfg), acct(broken, 'b'), acct(tmp(), 'c'), { ...acct(cfg, 'x'), provider: 'codex' }], [proj, other])
+    const r = mcpReport([acct(cfg), acct(broken, 'b'), acct(tmp(), 'c'), { ...acct(cfg, 'x'), provider: 'codex' }], [proj, other], tmp())
     expect(r.accounts.map((a) => a.accountId)).toEqual(['a1', 'b', 'c'])
     expect(r.accounts[0]!.servers).toEqual([
       { name: 'u', scope: 'user', transport: 'stdio', target: 'a' },
@@ -115,7 +115,28 @@ describe('cli', () => {
   })
 })
 
+describe('mcp default install', () => {
+  it('reads ~/.claude.json for the default install, <configDir>/.claude.json otherwise', () => {
+    const home = tmp()
+    mkdirSync(join(home, '.claude'))
+    w(join(home, '.claude.json'), JSON.stringify({ mcpServers: { d: { command: 'dflt' } } }))
+    w(join(home, '.claude', '.claude.json'), JSON.stringify({ mcpServers: { wrong: { command: 'x' } } }))
+    const r = mcpReport([acct(join(home, '.claude'))], [], home)
+    expect(r.accounts[0]!.servers.map((s) => s.name)).toEqual(['d'])
+  })
+})
+
 describe('install command', () => {
+  it('honors the e2e override only when main passes it', () => {
+    expect(installCommand('claude', 'echo hi')!.args).toEqual(['-lc', 'echo hi'])
+    expect(installCommand('codex', 'echo hi')).toBeUndefined()
+    process.env.RELAY_E2E_INSTALL_SCRIPT = 'echo env'
+    try {
+      expect(installCommand('claude')!.args[1]).toBe('curl -fsSL https://claude.ai/install.sh | bash')
+    } finally {
+      delete process.env.RELAY_E2E_INSTALL_SCRIPT
+    }
+  })
   it('is chosen from the provider constant only', () => {
     const c = installCommand('claude')!
     expect(c.bin).toBe('/bin/bash')

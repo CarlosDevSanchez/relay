@@ -74,8 +74,8 @@ export function checkSharedToggle(id: unknown, enabled: unknown, accounts: Accou
 }
 
 /** Installer request: only a provider id; the command itself is chosen by main. */
-export function checkInstall(provider: unknown): InstallCommand {
-  const c = installCommand(provider)
+export function checkInstall(provider: unknown, claudeScriptOverride?: string): InstallCommand {
+  const c = installCommand(provider, claudeScriptOverride)
   if (!c) throw new Error('No hay instalador oficial para este proveedor')
   return c
 }

@@ -39,7 +39,7 @@ export function App() {
   const [error, setError] = useState('')
   const [hits, setHits] = useState<LimitHit[]>([]) // queue, one per pty
   const [modalError, setModalError] = useState('')
-  const [exitedPtys, setExitedPtys] = useState<number[]>([])
+  const [, setExitedCount] = useState(0) // bumps on every exit so Onboarding re-renders
   const exitedRef = useRef(new Set<number>())
   const [view, setView] = useState<'main' | 'settings'>('main')
   const [cli, setCli] = useState<CliStatus | null>(null)
@@ -140,7 +140,7 @@ export function App() {
     () =>
       window.relay.pty.onExit((id) => {
         exitedRef.current.add(id)
-        setExitedPtys((e) => [...e, id])
+        setExitedCount((n) => n + 1)
         setTabs((ts) => ts.map((t) => (t.ptyId === id ? { ...t, exited: true } : t)))
         setHits((hs) => hs.filter((h) => h.ptyId !== id))
         const t = tabsRef.current.find((x) => x.ptyId === id)
@@ -312,12 +312,12 @@ export function App() {
           modal={modal}
           onInstall={install}
           installTab={tabs.find((t) => t.install)}
-          exitedPtys={exitedPtys}
+          isExited={(id) => exitedRef.current.has(id)}
           createAccount={createAccount}
           checkStatus={(id) => loadStatus(id, true)}
           next={() => setOb('project')}
           addProject={addProject}
-          finish={() => setOb(null)}
+          finish={() => (setTabs((ts) => ts.filter((t) => !t.install)), setOb(null))}
         />
         {modal.node}
       </>

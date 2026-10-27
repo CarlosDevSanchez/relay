@@ -223,7 +223,7 @@ function handle(): void {
     return { claude, codex }
   })
   ipcMain.handle('cli:install', async (_e, provider: unknown) => {
-    const c = checkInstall(provider) // the command comes from providers.ts, never from the renderer
+    const c = checkInstall(provider, app.isPackaged ? undefined : process.env.RELAY_E2E_INSTALL_SCRIPT) // the command comes from providers.ts, never from the renderer
     const r = await dialog.showMessageBox(win, {
       type: 'question',
       buttons: ['Cancelar', 'Instalar'],
@@ -239,7 +239,7 @@ function handle(): void {
   ipcMain.handle('catalog:open', async (_e, id: unknown) => {
     await shell.openPath(checkAccountId(id, loadAccounts(HOME)).configDir)
   })
-  ipcMain.handle('mcp:list', () => mcpReport(loadAccounts(HOME), loadProjects(HOME)))
+  ipcMain.handle('mcp:list', () => mcpReport(loadAccounts(HOME), loadProjects(HOME), homedir()))
   ipcMain.handle('notify:test', () => notify('Relay: notificación de prueba', undefined, true))
   ipcMain.handle('pty:start', (_e, req: StartRequest) => start(req))
   ipcMain.handle('prefs:get', () => loadPrefs(HOME))

@@ -21,10 +21,10 @@ export interface InstallCommand {
 }
 
 /** The renderer only names a provider; the command always comes from `installScript` here. */
-export function installCommand(id: unknown): InstallCommand | undefined {
+export function installCommand(id: unknown, claudeScriptOverride?: string): InstallCommand | undefined {
   if (typeof id !== 'string' || !Object.hasOwn(providers, id)) return undefined
-  // test hook (e2e): never reachable from the renderer
-  const script = (id === 'claude' && process.env.RELAY_E2E_INSTALL_SCRIPT) || providers[id as ProviderId].installScript
+  // test hook (e2e), passed in by main only when the app is not packaged; never reachable from the renderer
+  const script = (id === 'claude' && claudeScriptOverride) || providers[id as ProviderId].installScript
   return script ? { bin: '/bin/bash', args: ['-lc', script], display: `/bin/bash -lc '${script}'` } : undefined
 }
 

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { BrowserWindow, Notification, app, dialog, ipcMain, shell } from 'electron'
+import { BrowserWindow, Notification, app, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import type { Account, Candidate, HandoffRequest, StartRequest, StartResult } from '../shared/types'
 import { buildEnv, plainEnv } from './env'
 import { buildCatalog } from './catalog'
@@ -67,7 +67,7 @@ function onLimit(ptyId: number, a: Account, sessionId: string, h: LimitInfo): vo
   send('limit:hit', { ptyId, accountId: a.id, sessionId, ...h })
 }
 
-async function start(req: StartRequest): Promise<StartResult> {
+async function start(req: StartRequest, message?: string): Promise<StartResult> {
   const { cwd, mode, sessionId } = req
   const a = checkStart(req, loadAccounts(HOME), loadProjects(HOME))
   const p = providers[a.provider]
@@ -79,7 +79,7 @@ async function start(req: StartRequest): Promise<StartResult> {
     args = p.newArgs(sid)
   } else if (mode === 'resume') {
     if (!sid) throw new Error('sessionId required')
-    args = p.resumeArgs(sid)
+    args = p.resumeArgs(sid, message)
   } else {
     dir = homedir() // login: official `auth login` flow
     sid = undefined
@@ -266,14 +266,17 @@ function handle(): void {
     if (owner?.stale) throw new Error('Sesión cambiada dentro del CLI; vuelve a abrirla desde el sidebar para poder continuarla en otra cuenta')
     if (owner && (owner.accountId !== from.id || owner.sessionId !== req.sessionId)) throw new Error('pty does not belong to the source account and session')
     if (!sourceExists(from, req.cwd, req.sessionId)) throw new Error('Session has no transcript yet (send a first message before switching)')
+    // auto-continue only here: this IPC is reached after an explicit user confirmation (menu confirm or limit-modal click)
+    const h = loadPrefs(HOME).handoff
+    const message = h.autoContinue && providers[to.provider].resumePrompt ? h.message : undefined
     return runHandoff(
       () => killPty(req.ptyId),
       () => {
         const r = copySessionForHandoff(from, to, req.cwd, req.sessionId)
         recordCopy(HOME, to.id, req.sessionId, r)
       },
-      () => start({ accountId: to.id, cwd: req.cwd, mode: 'resume', sessionId: req.sessionId })
-    )
+      () => start({ accountId: to.id, cwd: req.cwd, mode: 'resume', sessionId: req.sessionId }, message)
+    ).then((r) => (message ? { ...r, autoContinued: true } : r))
   })
 }
 
@@ -283,7 +286,7 @@ app.whenReady().then(() => {
   win = new BrowserWindow({
     width: 1280,
     height: 800,
-    backgroundColor: '#1f1e1d',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1917' : '#faf8f5',
     titleBarStyle: 'hiddenInset',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

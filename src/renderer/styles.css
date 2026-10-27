@@ -1,25 +1,87 @@
 @import 'tailwindcss';
-
-/* design tokens: colors, radius, font sizes (use as bg-surface, text-muted, rounded-card ...) */
-@theme {
-  --color-bg: #1f1e1d;
-  --color-surface: #262624;
-  --color-card: #2d2c2a;
-  --color-line: rgb(255 255 255 / 0.1);
-  --color-fg: #e8e6e3;
-  --color-muted: rgb(232 230 227 / 0.55);
-  --color-accent: #d97757;
-  --color-ok: #4ade80;
-  --color-warn: #fbbf24;
-  --color-bad: #f87171;
-  --radius-card: 0.5rem;
-  --text-sm: 0.8125rem;
-  --text-xs: 0.75rem;
+@plugin "daisyui" {
+  themes: false;
+  logs: false;
 }
-html, body, #root { height: 100%; margin: 0; background: var(--color-bg); color: var(--color-fg); font-family: system-ui, sans-serif; font-size: 13px; }
+
+/* Relay themes (own palette: ember amber accent on warm neutrals). relay-light is the default theme; relay-dark (prefersdark) is used when the OS prefers dark. */
+@plugin "daisyui/theme" {
+  name: 'relay-light';
+  default: true;
+  color-scheme: light;
+  --color-base-100: oklch(99% 0.004 80);
+  --color-base-200: oklch(96.5% 0.007 80);
+  --color-base-300: oklch(91% 0.01 80);
+  --color-base-content: oklch(27% 0.02 60);
+  --color-primary: oklch(66% 0.16 62);
+  --color-primary-content: oklch(21% 0.04 60);
+  --color-secondary: oklch(52% 0.1 255);
+  --color-secondary-content: oklch(97% 0.01 255);
+  --color-accent: oklch(58% 0.13 195);
+  --color-accent-content: oklch(97% 0.01 195);
+  --color-neutral: oklch(32% 0.02 60);
+  --color-neutral-content: oklch(96% 0.006 80);
+  --color-info: oklch(62% 0.13 240);
+  --color-info-content: oklch(98% 0.01 240);
+  --color-success: oklch(62% 0.15 155);
+  --color-success-content: oklch(98% 0.01 155);
+  --color-warning: oklch(78% 0.15 85);
+  --color-warning-content: oklch(28% 0.06 80);
+  --color-error: oklch(59% 0.19 25);
+  --color-error-content: oklch(98% 0.01 25);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+@plugin "daisyui/theme" {
+  name: 'relay-dark';
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: oklch(24% 0.012 60);
+  --color-base-200: oklch(20.5% 0.011 60);
+  --color-base-300: oklch(31% 0.014 60);
+  --color-base-content: oklch(92% 0.012 80);
+  --color-primary: oklch(76% 0.15 68);
+  --color-primary-content: oklch(21% 0.04 60);
+  --color-secondary: oklch(72% 0.11 255);
+  --color-secondary-content: oklch(20% 0.03 255);
+  --color-accent: oklch(76% 0.11 195);
+  --color-accent-content: oklch(20% 0.03 195);
+  --color-neutral: oklch(33% 0.015 60);
+  --color-neutral-content: oklch(94% 0.008 80);
+  --color-info: oklch(74% 0.12 240);
+  --color-info-content: oklch(20% 0.03 240);
+  --color-success: oklch(76% 0.15 155);
+  --color-success-content: oklch(20% 0.04 155);
+  --color-warning: oklch(82% 0.15 85);
+  --color-warning-content: oklch(25% 0.05 80);
+  --color-error: oklch(70% 0.17 25);
+  --color-error-content: oklch(20% 0.04 25);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--color-base-100); color: var(--color-base-content); font-family: system-ui, sans-serif; font-size: 13px; }
 .drag { -webkit-app-region: drag; }
 .nodrag { -webkit-app-region: no-drag; }
-.btn { -webkit-app-region: no-drag; @apply rounded-card border border-line px-2.5 py-1 text-xs hover:bg-white/10 disabled:opacity-40 disabled:hover:bg-transparent; }
-.btn-primary { -webkit-app-region: no-drag; @apply rounded-card bg-accent px-3 py-1.5 text-sm font-medium text-black hover:brightness-110 disabled:opacity-40; }
-.input { @apply w-full rounded-card border border-line bg-bg px-2.5 py-1.5 text-sm outline-none focus:border-accent; }
-.card { @apply rounded-card border border-line bg-card p-3 text-xs; }
+
+/* tab switch: the terminal fades in when its pane is shown */
+@keyframes relay-fade { from { opacity: 0 } to { opacity: 1 } }
+.fade-in { animation: relay-fade 0.18s ease-out; }
+.lift { transition: box-shadow 0.15s, border-color 0.15s, background-color 0.15s; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}

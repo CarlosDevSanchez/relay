@@ -4,7 +4,10 @@ export interface Provider {
   bin: string
   /** env var that points the CLI at an account's config dir */
   envVar: string
-  resumeArgs(id: string): string[]
+  /** `message` = initial prompt (separate argv element, never a shell string); ignored when `resumePrompt` is false */
+  resumeArgs(id: string, message?: string): string[]
+  /** the CLI accepts a positional prompt together with the resume flag */
+  resumePrompt: boolean
   newArgs(id: string): string[]
   loginArgs: string[]
   /** false = never run against the real CLI */
@@ -32,7 +35,8 @@ export const providers: Record<ProviderId, Provider> = {
   claude: {
     bin: 'claude',
     envVar: 'CLAUDE_CONFIG_DIR',
-    resumeArgs: (id) => ['--resume', id],
+    resumeArgs: (id, message) => (message ? ['--resume', id, message] : ['--resume', id]),
+    resumePrompt: true,
     newArgs: (id) => ['--session-id', id],
     loginArgs: ['auth', 'login'],
     verified: true,
@@ -44,6 +48,7 @@ export const providers: Record<ProviderId, Provider> = {
     bin: 'codex',
     envVar: 'CODEX_HOME',
     resumeArgs: (id) => ['resume', id],
+    resumePrompt: false,
     newArgs: () => [],
     loginArgs: ['login'],
     verified: false

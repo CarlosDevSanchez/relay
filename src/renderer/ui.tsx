@@ -13,12 +13,12 @@ export const IconGear = () => <Svg d="M8 10a2 2 0 100-4 2 2 0 000 4zM8 1.5v2M8 1
 export const IconLink = () => <Svg d="M6.5 9.5l3-3M7 4.5l1-1a2.5 2.5 0 013.5 3.5l-1 1M9 11.5l-1 1A2.5 2.5 0 014.5 9l1-1" size={12} />
 export const IconFolder = () => <Svg d="M2 4.5A1.5 1.5 0 013.5 3H6l1.5 1.5h5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5z" />
 
-// ---- status dot ----
+// ---- status dot (daisyUI `status`) ----
 export const Dot = ({ tone }: { tone: 'ok' | 'warn' | 'off' }) => (
-  <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${tone === 'ok' ? 'bg-ok' : tone === 'warn' ? 'bg-warn' : 'bg-white/30'}`} />
+  <span aria-hidden="true" className={`status shrink-0 ${tone === 'ok' ? 'status-success' : tone === 'warn' ? 'status-warning' : 'status-neutral'}`} />
 )
 
-// ---- dropdown menu ----
+// ---- dropdown menu (daisyUI `dropdown`, focus based: closes on blur) ----
 export interface MenuItem {
   label: string
   onClick(): void
@@ -26,77 +26,127 @@ export interface MenuItem {
   title?: string
   danger?: boolean
 }
-export function Dropdown({ trigger, items, title, align = 'right' }: { trigger: ReactNode; items: MenuItem[]; title?: string; align?: 'left' | 'right' }) {
-  const [open, setOpen] = useState(false)
+export function Dropdown({ trigger, items, title, align = 'right', btnClass = 'btn btn-sm btn-ghost' }: { trigger: ReactNode; items: MenuItem[]; title?: string; align?: 'left' | 'right'; btnClass?: string }) {
   return (
-    <span className="nodrag relative inline-block">
-      <button className="btn flex items-center gap-1" title={title} aria-haspopup="menu" onClick={() => setOpen((o) => !o)}>
-        {trigger}
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
-          <div role="menu" className={`absolute z-30 mt-1 min-w-44 rounded-card border border-line bg-surface py-1 shadow-lg ${align === 'right' ? 'right-0' : 'left-0'}`}>
-            {items.length === 0 && <div className="px-3 py-1.5 text-xs text-muted">Sin opciones</div>}
-            {items.map((it) => (
-              <button
-                key={it.label}
-                role="menuitem"
-                disabled={it.disabled}
-                title={it.title}
-                className={`block w-full px-3 py-1.5 text-left text-xs hover:bg-white/10 disabled:opacity-40 disabled:hover:bg-transparent ${it.danger ? 'text-bad' : ''}`}
-                onClick={() => (setOpen(false), it.onClick())}
-              >
-                {it.label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </span>
+    <div className={`dropdown nodrag ${align === 'right' ? 'dropdown-end' : ''}`}>
+      <div className="tooltip tooltip-bottom" data-tip={title}>
+        <div tabIndex={0} role="button" aria-haspopup="menu" aria-label={title} className={`${btnClass} gap-1`}>
+          {trigger}
+        </div>
+      </div>
+      <ul tabIndex={0} role="menu" className="dropdown-content menu z-30 mt-1 w-60 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg">
+        {items.length === 0 && <li className="menu-disabled"><span>Sin opciones</span></li>}
+        {items.map((it) => (
+          <li key={it.label} className={it.disabled ? 'menu-disabled' : ''}>
+            <button role="menuitem" disabled={it.disabled} title={it.title} className={it.danger ? 'text-error' : ''} onClick={() => ((document.activeElement as HTMLElement | null)?.blur(), it.onClick())}>
+              {it.label}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 
-// ---- in-app modal (Electron has no window.prompt/confirm/alert) ----
+// ---- modal (native <dialog>, daisyUI `modal`): one component for every dialog ----
+export function Dialog({ label, onClose, children, boxClass = '' }: { label: string; onClose(): void; children: ReactNode; boxClass?: string }) {
+  const ref = useRef<HTMLDialogElement>(null)
+  useEffect(() => {
+    const d = ref.current
+    if (!d || d.open) return
+    d.showModal()
+    // showModal() focuses the first button; a dialog that appears on its own must start on its safe element
+    d.querySelector<HTMLElement>('[data-autofocus]')?.focus()
+    // toasts live in the top layer too: lift them above the dialog just opened
+    document.querySelectorAll<HTMLElement>('[popover]:popover-open').forEach((p) => (p.hidePopover(), p.showPopover()))
+  }, [])
+  return (
+    <dialog ref={ref} aria-label={label} className="modal" onClose={onClose}>
+      <div className={`modal-box ${boxClass}`}>{children}</div>
+      <form method="dialog" className="modal-backdrop">
+        <button tabIndex={-1} aria-label="Cerrar">cerrar</button>
+      </form>
+    </dialog>
+  )
+}
+
+// ---- toasts (daisyUI `toast` + `alert`); errors and anything with paths stay until dismissed ----
+export interface ToastItem {
+  id: number
+  kind: 'success' | 'error' | 'info'
+  text: string
+}
+export function useToasts() {
+  const [list, setList] = useState<ToastItem[]>([])
+  const n = useRef(0)
+  const dismiss = (id: number) => setList((l) => l.filter((t) => t.id !== id))
+  const push = (kind: ToastItem['kind'], text: string, sticky = kind === 'error') => {
+    const id = ++n.current
+    setList((l) => [...l, { id, kind, text }])
+    if (!sticky) setTimeout(() => dismiss(id), 7000)
+  }
+  return { list, push, dismiss }
+}
+export type Toasts = ReturnType<typeof useToasts>
+const ALERT = { success: 'alert-success', error: 'alert-error', info: 'alert-info' }
+/** Rendered once; a manual popover lives in the top layer, so it shows above any open <dialog>. */
+export function ToastStack({ t }: { t: Toasts }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const n = t.list.length
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    if (el.matches(':popover-open')) el.hidePopover()
+    if (n) el.showPopover() // re-shown on every change: last shown = topmost
+  }, [n])
+  return (
+    <div ref={ref} popover="manual" className="toast toast-end toast-bottom max-w-md overflow-visible bg-transparent">
+      {t.list.map((x) => (
+        <div key={x.id} role="alert" className={`alert ${ALERT[x.kind]} items-start text-sm shadow-lg`}>
+          <span className="min-w-0 whitespace-pre-wrap break-words">{x.text}</span>
+          <button className="btn btn-ghost btn-xs btn-square" aria-label="Cerrar aviso" onClick={() => t.dismiss(x.id)}>✕</button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ---- in-app prompt/confirm (Electron has no window.prompt/confirm/alert) ----
 interface Req {
   title: string
   message?: string
   input?: { label: string; initial: string }
   confirm: string
   danger?: boolean
+  /** focus Cancelar instead of the confirm button (switching/destructive confirms) */
+  safe?: boolean
   resolve(v: string | boolean | null): void
 }
 
 function ModalView({ req, done }: { req: Req; done(v: string | boolean | null): void }) {
   const [text, setText] = useState(req.input?.initial ?? '')
   const ok = !req.input || text.trim() !== ''
-  const ref = useRef<HTMLFormElement>(null)
-  useEffect(() => ref.current?.querySelector('input')?.select(), [])
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => ref.current?.select(), [])
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), done(req.input ? null : false))}>
-      <form
-        ref={ref}
-        role="dialog"
-        aria-label={req.title}
-        className="w-96 rounded-card border border-line bg-surface p-4 text-sm"
-        onSubmit={(e) => (e.preventDefault(), ok && done(req.input ? text.trim() : true))}
-      >
-        <b>{req.title}</b>
-        {req.message && <p className="mt-1 whitespace-pre-wrap text-xs text-muted">{req.message}</p>}
+    <Dialog label={req.title} onClose={() => done(req.input ? null : false)}>
+      <form onSubmit={(e) => (e.preventDefault(), ok && done(req.input ? text.trim() : true))}>
+        <h3 className="text-base font-semibold">{req.title}</h3>
+        {req.message && <p className="mt-2 whitespace-pre-wrap text-sm opacity-70">{req.message}</p>}
         {req.input && (
-          <label className="mt-3 block text-xs text-muted">
-            {req.input.label}
-            <input className="input mt-1" autoFocus value={text} onChange={(e) => setText(e.target.value)} />
-          </label>
+          <fieldset className="fieldset mt-3">
+            <legend className="fieldset-legend">{req.input.label}</legend>
+            <input ref={ref} className="input w-full" data-autofocus value={text} onChange={(e) => setText(e.target.value)} />
+          </fieldset>
         )}
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className="btn" onClick={() => done(req.input ? null : false)}>Cancelar</button>
-          <button type="submit" autoFocus={!req.input} disabled={!ok} className={req.danger ? 'btn border-bad text-bad' : 'btn-primary'}>
+        <div className="modal-action">
+          <button type="button" className="btn btn-ghost" {...(req.safe || req.danger ? { 'data-autofocus': true } : {})} onClick={() => done(req.input ? null : false)}>Cancelar</button>
+          <button type="submit" {...(!req.input && !req.safe && !req.danger ? { 'data-autofocus': true } : {})} disabled={!ok} className={`btn ${req.danger ? 'btn-error' : 'btn-primary'}`}>
             {req.confirm}
           </button>
         </div>
       </form>
-    </div>
+    </Dialog>
   )
 }
 
@@ -105,7 +155,7 @@ export function useModal() {
   const ask = (r: Omit<Req, 'resolve'>) => new Promise<string | boolean | null>((resolve) => setReq({ ...r, resolve }))
   return {
     prompt: (title: string, initial = '', label = 'Nombre') => ask({ title, input: { label, initial }, confirm: 'Aceptar' }) as Promise<string | null>,
-    confirm: (title: string, message: string, confirm = 'Aceptar', danger = false) => ask({ title, message, confirm, danger }).then((v) => v === true),
+    confirm: (title: string, message: string, confirm = 'Aceptar', danger = false, safe = false) => ask({ title, message, confirm, danger, safe }).then((v) => v === true),
     node: req && <ModalView req={req} done={(v) => (req.resolve(v), setReq(null))} />
   }
 }

@@ -40,6 +40,8 @@ export interface StartRequest {
 }
 
 export interface StartResult {
+  /** handoff only: the target was started with the auto-continue message */
+  autoContinued?: boolean
   ptyId: number
   sessionId?: string
 }
@@ -84,6 +86,8 @@ export interface Candidate {
 
 export interface Prefs {
   notifications: { system: boolean; sound: boolean }
+  /** after a user-confirmed handoff, the target is started with `message` as the CLI's initial prompt */
+  handoff: { autoContinue: boolean; message: string }
 }
 
 export interface CliInfo {

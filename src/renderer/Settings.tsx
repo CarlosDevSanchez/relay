@@ -1,13 +1,12 @@
-import { useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import type { Account, AccountStatus, CatalogLocation, CliStatus, McpReport, McpServer, Prefs } from '../shared/types'
 import { CLAUDE_MISSING, statusLine } from './status'
-
+import { Dialog } from './ui'
 
 export interface SettingsProps {
   accounts: Account[]
   statuses: Record<string, AccountStatus>
   cli: CliStatus | null
-  error: string
   onClose(): void
   onDetect(): void
   onInstall(): void
@@ -18,62 +17,71 @@ export interface SettingsProps {
   login(a: Account): void
 }
 
-const SECTIONS = ['Cuentas', 'Notificaciones', 'Skills, agents y commands', 'Conectores (MCP)', 'CLI'] as const
+const SECTIONS = ['Cuentas', 'Cambio de cuenta', 'Notificaciones', 'Skills, agents y commands', 'Conectores (MCP)', 'CLI'] as const
 
+/** Large modal (native dialog) with a left menu; ESC / backdrop / ✕ close it. */
 export function Settings(p: SettingsProps) {
   const [sec, setSec] = useState<(typeof SECTIONS)[number]>('Cuentas')
   return (
-    <div className="absolute inset-0 z-10 flex bg-bg">
-      <nav className="flex w-52 shrink-0 flex-col gap-1 border-r border-line bg-surface px-2 pt-10 text-sm">
-        <button className={`btn mb-2 self-start`} onClick={p.onClose}>← Volver</button>
+    <Dialog label="Configuración" onClose={p.onClose} boxClass="flex h-[82vh] w-11/12 max-w-5xl gap-0 overflow-hidden p-0">
+      <ul className="menu w-56 shrink-0 gap-1 border-r border-base-300 bg-base-200 p-3">
+        <li className="menu-title">Configuración</li>
         {SECTIONS.map((s) => (
-          <button key={s} onClick={() => setSec(s)} className={`rounded px-2 py-1.5 text-left ${s === sec ? 'bg-white/10 text-white' : 'text-muted hover:bg-white/5'}`}>
-            {s}
-          </button>
+          <li key={s}>
+            <button className={s === sec ? 'menu-active' : ''} onClick={() => setSec(s)}>{s}</button>
+          </li>
         ))}
-      </nav>
-      <div className="min-w-0 flex-1 overflow-y-auto p-6 pt-10">
-        <h2 className="mb-4 text-base font-semibold">{sec}</h2>
-        {p.error && <p className="mb-3 text-xs text-bad">{p.error}</p>}
+      </ul>
+      <div className="relative min-w-0 flex-1 overflow-y-auto p-6">
+        <button className="btn btn-ghost btn-sm btn-circle absolute right-3 top-3" aria-label="Cerrar configuración" onClick={p.onClose}>✕</button>
+        <h2 className="mb-4 text-lg font-semibold">{sec}</h2>
         {sec === 'Cuentas' && <Accounts {...p} />}
+        {sec === 'Cambio de cuenta' && <Handoff />}
         {sec === 'Notificaciones' && <Notifications />}
         {sec === 'Skills, agents y commands' && <Catalog accounts={p.accounts} />}
         {sec === 'Conectores (MCP)' && <Mcp accounts={p.accounts} />}
         {sec === 'CLI' && <Cli {...p} />}
       </div>
-    </div>
+    </Dialog>
   )
 }
+
+const Card = ({ children, className = '' }: { children: ReactNode; className?: string }) => (
+  <div className={`card card-border card-sm bg-base-100 shadow-sm ${className}`}>
+    <div className="card-body gap-1 text-sm">{children}</div>
+  </div>
+)
+const Loading = () => <span className="loading loading-spinner loading-sm" aria-label="Cargando" />
 
 function Accounts(p: SettingsProps) {
   const off = p.cli?.claude.installed === false
   return (
     <div className="space-y-3">
       <div className="flex gap-2">
-        <button className="btn" onClick={() => p.add(false)}>+ Cuenta nueva</button>
-        <button className="btn" onClick={() => p.add(true)}>Importar carpeta</button>
+        <button className="btn btn-primary btn-sm" onClick={() => p.add(false)}>+ Cuenta nueva</button>
+        <button className="btn btn-outline btn-sm" onClick={() => p.add(true)}>Importar carpeta</button>
       </div>
       {p.accounts.map((a) => (
-        <div key={a.id} className="card">
+        <Card key={a.id}>
           <div className="flex items-center justify-between">
-            <b className="text-sm text-fg">{a.label}</b>
+            <b>{a.label}</b>
             <span className="space-x-2">
-              <button className="btn" onClick={() => p.rename(a)}>Renombrar</button>
-              <button className="btn" disabled={off && a.provider === 'claude'} title={off && a.provider === 'claude' ? CLAUDE_MISSING : ''} onClick={() => p.login(a)}>Login</button>
-              <button className="btn" onClick={() => p.remove(a)}>Quitar</button>
+              <button className="btn btn-outline btn-xs" onClick={() => p.rename(a)}>Renombrar</button>
+              <button className="btn btn-outline btn-xs" disabled={off && a.provider === 'claude'} title={off && a.provider === 'claude' ? CLAUDE_MISSING : ''} onClick={() => p.login(a)}>Login</button>
+              <button className="btn btn-outline btn-error btn-xs" onClick={() => p.remove(a)}>Quitar</button>
             </span>
           </div>
-          <div className="mt-1 text-muted">
+          <div className="opacity-60">
             {a.provider} · {a.managed ? 'gestionada por Relay' : a.defaultInstall ? 'instalación por defecto' : 'importada'} · <span className="break-all">{a.configDir}</span>
           </div>
-          <div className="text-muted">{statusLine(p.statuses[a.id])}</div>
-          {a.drift && <div className="text-warn">Memoria compartida desincronizada ({a.drift.join(', ')}); desactívala y vuelve a activarla.</div>}
+          <div className="opacity-60">{statusLine(p.statuses[a.id])}</div>
+          {a.drift && <div className="text-warning">Memoria compartida desincronizada ({a.drift.join(', ')}); desactívala y vuelve a activarla.</div>}
           {a.provider === 'claude' && (
-            <label className="mt-1 flex items-center gap-1 text-muted">
-              <input type="checkbox" checked={!!a.sharedMemory} onChange={(e) => p.setShared(a, e.target.checked)} /> Memoria compartida
+            <label className="mt-1 flex cursor-pointer items-center gap-2">
+              <input type="checkbox" className="toggle toggle-primary toggle-sm" checked={!!a.sharedMemory} onChange={(e) => p.setShared(a, e.target.checked)} /> Memoria compartida
             </label>
           )}
-        </div>
+        </Card>
       ))}
     </div>
   )
@@ -83,43 +91,74 @@ function Notifications() {
   const [prefs, setPrefs] = useState<Prefs | null>(null)
   const [msg, setMsg] = useState('')
   useEffect(() => void window.relay.prefs.get().then(setPrefs), [])
-  if (!prefs) return null
+  if (!prefs) return <Loading />
   const set = (k: 'system' | 'sound', v: boolean) => window.relay.prefs.set({ notifications: { ...prefs.notifications, [k]: v } }).then(setPrefs)
   return (
-    <div className="space-y-2 text-sm">
-      <label className="flex items-center gap-2"><input type="checkbox" checked={prefs.notifications.system} onChange={(e) => void set('system', e.target.checked)} /> Notificación del sistema</label>
-      <label className="flex items-center gap-2"><input type="checkbox" checked={prefs.notifications.sound} onChange={(e) => void set('sound', e.target.checked)} /> Sonido</label>
-      <button className="btn" onClick={() => void window.relay.notifyTest().then((ok) => setMsg(ok ? 'Enviada (si no la ves, revisa los permisos de notificaciones del sistema).' : 'Las notificaciones no están disponibles en este sistema.'))}>
+    <div className="space-y-3 text-sm">
+      <label className="flex cursor-pointer items-center gap-3"><input type="checkbox" className="toggle toggle-primary" checked={prefs.notifications.system} onChange={(e) => void set('system', e.target.checked)} /> Notificación del sistema</label>
+      <label className="flex cursor-pointer items-center gap-3"><input type="checkbox" className="toggle toggle-primary" checked={prefs.notifications.sound} onChange={(e) => void set('sound', e.target.checked)} /> Sonido</label>
+      <button className="btn btn-outline btn-sm" onClick={() => void window.relay.notifyTest().then((ok) => setMsg(ok ? 'Enviada (si no la ves, revisa los permisos de notificaciones del sistema).' : 'Las notificaciones no están disponibles en este sistema.'))}>
         Probar notificación
       </button>
-      {msg && <p className="text-xs text-muted">{msg}</p>}
+      {msg && <p className="text-xs opacity-60">{msg}</p>}
+    </div>
+  )
+}
+
+function Handoff() {
+  const [prefs, setPrefs] = useState<Prefs | null>(null)
+  const [text, setText] = useState('')
+  const [msg, setMsg] = useState<{ ok: boolean; t: string } | null>(null)
+  useEffect(() => void window.relay.prefs.get().then((x) => (setPrefs(x), setText(x.handoff.message))), [])
+  if (!prefs) return <Loading />
+  const save = (patch: Partial<Prefs['handoff']>) =>
+    window.relay.prefs
+      .set({ handoff: { ...prefs.handoff, ...patch } })
+      .then((x) => (setPrefs(x), setText(x.handoff.message), setMsg({ ok: true, t: 'Guardado' })))
+      .catch((e) => setMsg({ ok: false, t: e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, '') : String(e) }))
+  return (
+    <div className="space-y-4 text-sm">
+      <p className="opacity-70">Tras confirmar tú un cambio de cuenta, Relay reanuda la sesión en la otra cuenta y le pasa un mensaje inicial al CLI para que siga sin que tengas que escribir nada. Nunca cambia de cuenta por sí solo.</p>
+      <label className="flex cursor-pointer items-center gap-3">
+        <input type="checkbox" className="toggle toggle-primary" checked={prefs.handoff.autoContinue} onChange={(e) => void save({ autoContinue: e.target.checked })} /> Continuar automáticamente tras el cambio
+      </label>
+      <fieldset className="fieldset">
+        <legend className="fieldset-legend">Mensaje inicial</legend>
+        <div className="join w-full">
+          <input className="input join-item w-full" aria-label="Mensaje inicial" maxLength={500} disabled={!prefs.handoff.autoContinue} value={text} onChange={(e) => (setText(e.target.value), setMsg(null))} />
+          <button className="btn join-item" disabled={!prefs.handoff.autoContinue || text.trim() === prefs.handoff.message} onClick={() => void save({ message: text })}>Guardar</button>
+        </div>
+        <p className="label">1 a 500 caracteres, sin saltos de línea; no puede empezar por "-".</p>
+      </fieldset>
+      {msg && <div role="alert" className={`alert alert-soft ${msg.ok ? 'alert-success' : 'alert-error'} py-2`}>{msg.t}</div>}
     </div>
   )
 }
 
 function Catalog({ accounts }: { accounts: Account[] }) {
-  const [locs, setLocs] = useState<CatalogLocation[]>([])
+  const [locs, setLocs] = useState<CatalogLocation[] | null>(null)
   useEffect(() => void window.relay.catalog.list().then(setLocs), [accounts])
+  if (!locs) return <Loading />
   const kinds = [['Skills', 'skills'], ['Agents', 'agents'], ['Commands', 'commands']] as const
   return (
     <div className="space-y-3">
       {locs.map((l) => (
-        <div key={l.accountId ?? 'shared'} className="card">
+        <Card key={l.accountId ?? 'shared'}>
           <div className="mb-2 flex items-center justify-between">
-            <b className="text-sm text-fg">{l.label}</b>
-            <button className="btn" onClick={() => void (l.accountId ? window.relay.catalog.open(l.accountId) : window.relay.shared.open())}>Abrir carpeta</button>
+            <b>{l.label}</b>
+            <button className="btn btn-outline btn-xs" onClick={() => void (l.accountId ? window.relay.catalog.open(l.accountId) : window.relay.shared.open())}>Abrir carpeta</button>
           </div>
           {kinds.map(([title, k]) => (
             <div key={k} className="mb-1">
-              <div className="text-muted">{title} ({l[k].length})</div>
+              <div className="opacity-60">{title} ({l[k].length})</div>
               {l[k].map((e) => (
                 <div key={e.name} className="pl-3">
-                  <span className="text-fg">{e.name}</span> <span className="text-muted">{e.description}</span>
+                  <span>{e.name}</span> <span className="opacity-60">{e.description}</span>
                 </div>
               ))}
             </div>
           ))}
-        </div>
+        </Card>
       ))}
     </div>
   )
@@ -127,12 +166,12 @@ function Catalog({ accounts }: { accounts: Account[] }) {
 
 const Servers = ({ list }: { list: McpServer[] }) =>
   list.length === 0 ? (
-    <div className="text-muted">Sin servidores</div>
+    <div className="opacity-60">Sin servidores</div>
   ) : (
     <>
       {list.map((s, i) => (
         <div key={i} className="pl-3">
-          <span className="text-fg">{s.name}</span> <span className="text-muted">{s.scope} · {s.transport}{s.target ? ` · ${s.target}` : ''}{s.project ? ` · ${s.project}` : ''}</span>
+          <span>{s.name}</span> <span className="opacity-60">{s.scope} · {s.transport}{s.target ? ` · ${s.target}` : ''}{s.project ? ` · ${s.project}` : ''}</span>
         </div>
       ))}
     </>
@@ -141,21 +180,21 @@ const Servers = ({ list }: { list: McpServer[] }) =>
 function Mcp({ accounts }: { accounts: Account[] }) {
   const [r, setR] = useState<McpReport | null>(null)
   useEffect(() => void window.relay.mcp.list().then(setR), [accounts])
-  if (!r) return null
+  if (!r) return <Loading />
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted">Solo lectura. Relay muestra nombre, ámbito, tipo y comando/origen; nunca env, cabeceras ni argumentos.</p>
+      <p className="text-xs opacity-60">Solo lectura. Relay muestra nombre, ámbito, tipo y comando/origen; nunca env, cabeceras ni argumentos.</p>
       {r.accounts.map((a) => (
-        <div key={a.accountId} className="card">
-          <b className="text-sm text-fg">{accounts.find((x) => x.id === a.accountId)?.label ?? a.accountId}</b>
+        <Card key={a.accountId}>
+          <b>{accounts.find((x) => x.id === a.accountId)?.label ?? a.accountId}</b>
           <Servers list={a.servers} />
-        </div>
+        </Card>
       ))}
       {r.projects.filter((x) => x.servers.length).map((x) => (
-        <div key={x.cwd} className="card">
-          <b className="break-all text-sm text-fg">{x.cwd} (.mcp.json)</b>
+        <Card key={x.cwd}>
+          <b className="break-all">{x.cwd} (.mcp.json)</b>
           <Servers list={x.servers} />
-        </div>
+        </Card>
       ))}
     </div>
   )
@@ -164,20 +203,22 @@ function Mcp({ accounts }: { accounts: Account[] }) {
 function Cli(p: SettingsProps) {
   useEffect(p.onDetect, [])
   const row = (name: string, i?: { installed: boolean; version?: string }, extra?: string) => (
-    <div className="card">
-      <b className="text-sm text-fg">{name}</b>{' '}
-      <span className="text-muted">{!i ? '…' : i.installed ? `instalado${i.version ? ` · ${i.version}` : ''}` : 'no instalado'}</span>
-      {extra && <span className="text-muted"> · {extra}</span>}
-    </div>
+    <Card>
+      <div className="flex items-center gap-2">
+        <b>{name}</b>
+        {!i ? <Loading /> : <span className={`badge badge-soft ${i.installed ? 'badge-success' : 'badge-warning'}`}>{i.installed ? `instalado${i.version ? ` · ${i.version}` : ''}` : 'no instalado'}</span>}
+        {extra && <span className="opacity-60">{extra}</span>}
+      </div>
+    </Card>
   )
   return (
     <div className="space-y-3">
       {row('Claude Code', p.cli?.claude)}
       {p.cli?.claude.installed === false && (
-        <button className="btn" onClick={p.onInstall}>Instalar Claude Code</button>
+        <button className="btn btn-primary btn-sm" onClick={p.onInstall}>Instalar Claude Code</button>
       )}
       {row('Codex', p.cli?.codex, 'soporte en F5')}
-      <button className="btn" onClick={p.onDetect}>Volver a detectar</button>
+      <button className="btn btn-outline btn-sm" onClick={p.onDetect}>Volver a detectar</button>
     </div>
   )
 }

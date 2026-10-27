@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { buildEnv } from '../src/main/env'
 import { pickRebind, watchNewSession, parseLimitLine, parseLimitText, parseResetAt, scheduleAt, tailFile, watchLimits } from '../src/main/limit'
 import { loadPrefs, savePrefs } from '../src/main/prefs'
+import { providers } from '../src/main/providers'
 import { copySessionForHandoff, runHandoff, terminate } from '../src/main/handoff'
 import { claudeProjectDir, encodeCwd } from '../src/main/paths'
 import { listSessions, sessionTitle } from '../src/main/sessions'
@@ -440,12 +441,35 @@ describe('tail + watchLimits', () => {
 describe('prefs', () => {
   it('defaults, merges only known booleans, tolerates garbage', () => {
     const h = tmp()
-    expect(loadPrefs(h)).toEqual({ notifications: { system: true, sound: true } })
-    expect(savePrefs(h, { notifications: { sound: false, evil: 1, system: 'x' } })).toEqual({ notifications: { system: true, sound: false } })
+    const hd = { autoContinue: true, message: 'Continúa exactamente donde lo dejaste.' }
+    expect(loadPrefs(h)).toEqual({ notifications: { system: true, sound: true }, handoff: hd })
+    expect(savePrefs(h, { notifications: { sound: false, evil: 1, system: 'x' } })).toEqual({ notifications: { system: true, sound: false }, handoff: hd })
     expect(loadPrefs(h).notifications.sound).toBe(false)
     expect(savePrefs(h, null).notifications.sound).toBe(false)
     writeFileSync(join(h, 'prefs.json'), 'nope')
     expect(loadPrefs(h).notifications.system).toBe(true)
+  })
+})
+
+describe('handoff prefs and resume args', () => {
+  it('validates and persists the auto-continue message', () => {
+    const h = tmp()
+    expect(savePrefs(h, { handoff: { autoContinue: false, message: '  sigue ya  ' } }).handoff).toEqual({ autoContinue: false, message: 'sigue ya' })
+    expect(loadPrefs(h).handoff.message).toBe('sigue ya')
+    for (const bad of ['', '   ', 'x'.repeat(501), 'a\nb', 'a\u0000b', '--model x', 'update', 'install', 'doctor', 'Mcp-Add', 5, null]) expect(() => savePrefs(h, { handoff: { message: bad } })).toThrow(/Mensaje/)
+    expect(loadPrefs(h).handoff.message).toBe('sigue ya')
+    expect(() => savePrefs(h, { handoff: 'x' })).not.toThrow() // non-object patch is ignored, not a TypeError from `in`
+    expect(savePrefs(h, { handoff: { message: 'sigue ya otra vez' } }).handoff.message).toBe('sigue ya otra vez')
+    expect(savePrefs(h, { handoff: { message: 'Continúa' } }).handoff.message).toBe('Continúa')
+    writeFileSync(join(h, 'prefs.json'), JSON.stringify({ handoff: { autoContinue: 'x', message: '-bad' } }))
+    expect(loadPrefs(h).handoff).toEqual({ autoContinue: true, message: 'Continúa exactamente donde lo dejaste.' })
+  })
+  it('builds argv provider-aware, message as one element', () => {
+    const id = '11111111-1111-1111-1111-111111111111'
+    expect(providers.claude.resumeArgs(id)).toEqual(['--resume', id])
+    expect(providers.claude.resumeArgs(id, 'a b; rm -rf /')).toEqual(['--resume', id, 'a b; rm -rf /'])
+    expect(providers.codex.resumePrompt).toBe(false)
+    expect(providers.codex.resumeArgs(id, 'hola')).toEqual(['resume', id])
   })
 })
 

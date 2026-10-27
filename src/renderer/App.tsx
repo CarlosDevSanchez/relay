@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Account, AccountStatus, CliStatus, LimitHit, SessionInfo, SharedReport } from '../shared/types'
+import { LoginPanel } from './Login'
 import { Onboarding } from './Onboarding'
 import { Settings } from './Settings'
 import { Sidebar } from './Sidebar'
 import { CLAUDE_MISSING, suggestLabel } from './status'
 import { TerminalPane } from './Terminal'
-import { Dropdown, IconChevron, ago, useModal } from './ui'
+import { Dialog, Dot, Dropdown, IconChevron, IconFolder, ToastStack, ago, useModal, useToasts } from './ui'
 
 interface Tab {
   ptyId: number
@@ -14,6 +15,8 @@ interface Tab {
   title: string
   sessionId?: string
   login?: boolean
+  /** login tab: auth status re-read after the pty exited */
+  checked?: boolean
   install?: boolean
   exited?: boolean
   hint?: string
@@ -36,7 +39,9 @@ export function App() {
   const [active, setActive] = useState<string | null>(null) // selected account id
   const [tabs, setTabs] = useState<Tab[]>([])
   const [cur, setCur] = useState<number | null>(null) // active tab ptyId
-  const [error, setError] = useState('')
+  const toasts = useToasts()
+  const setError = (m: string) => m && toasts.push('error', m)
+  const [autoCont, setAutoCont] = useState(true)
   const [hits, setHits] = useState<LimitHit[]>([]) // queue, one per pty
   const [modalError, setModalError] = useState('')
   const [, setExitedCount] = useState(0) // bumps on every exit so Onboarding re-renders
@@ -44,7 +49,6 @@ export function App() {
   const [view, setView] = useState<'main' | 'settings'>('main')
   const [cli, setCli] = useState<CliStatus | null>(null)
   const claudeMissing = cli?.claude.installed === false
-  const [notices, setNotices] = useState<string[]>([])
   const hit = hits[0]
   const hitTab = hit && tabs.find((x) => x.ptyId === hit.ptyId)
   const dropHit = (ptyId?: number) => {
@@ -68,10 +72,7 @@ export function App() {
   }
 
   const showShared = (label: string, r: SharedReport) =>
-    setNotices((n) => [
-      ...n,
-      [`Memoria compartida · ${label}: ${r.linked.length} enlace(s) creado(s)`, ...r.notes, ...(r.backups.length ? ['Copias de seguridad:', ...r.backups] : []), ...r.errors.map((e) => `ERROR ${e}`)].join('\n')
-    ])
+    toasts.push(r.errors.length ? 'error' : 'success', [`Memoria compartida · ${label}: ${r.linked.length} enlace(s) creado(s)`, ...r.notes, ...(r.backups.length ? ['Copias de seguridad:', ...r.backups] : []), ...r.errors.map((e) => `ERROR ${e}`)].join('\n'), r.errors.length > 0 || r.backups.length > 0)
 
   const setShared = (a: Account, enabled: boolean) =>
     run(async () => {
@@ -82,12 +83,10 @@ export function App() {
 
   const detect = useCallback(() => void window.relay.cli.detect().then(setCli).catch(() => undefined), [])
   useEffect(detect, [detect])
+  // the limit modal states whether the target session will continue by itself
   useEffect(() => {
-    if (view !== 'settings') return
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setView('main')
-    window.addEventListener('keydown', esc)
-    return () => window.removeEventListener('keydown', esc)
-  }, [view])
+    if (hit) void window.relay.prefs.get().then((x) => setAutoCont(x.handoff.autoContinue))
+  }, [hit?.ptyId])
 
   const loadStatus = useCallback(
     (id: string, refresh = false): Promise<AccountStatus | undefined> =>
@@ -97,6 +96,8 @@ export function App() {
         .then((s) => (setStatuses((m) => ({ ...m, [id]: s })), s)),
     []
   )
+
+  const markChecked = (accountId: string, ptyId: number) => loadStatus(accountId, true).then(() => setTabs((ts) => ts.map((x) => (x.ptyId === ptyId ? { ...x, checked: true } : x))))
 
   const refresh = useCallback(async () => {
     const list = await window.relay.accounts.list()
@@ -144,7 +145,7 @@ export function App() {
         setTabs((ts) => ts.map((t) => (t.ptyId === id ? { ...t, exited: true } : t)))
         setHits((hs) => hs.filter((h) => h.ptyId !== id))
         const t = tabsRef.current.find((x) => x.ptyId === id)
-        if (t?.login) void loadStatus(t.accountId, true)
+        if (t?.login) void markChecked(t.accountId, id)
         if (t?.install) detect()
         setTick((n) => n + 1)
       }),
@@ -170,17 +171,17 @@ export function App() {
         setTabs((ts) => ts.map((x) => (x.ptyId === id && x.sessionId === sessionId ? { ...x, title, hint: `Sesión cambiada a ${title}` } : x)))
       }), 3000)
     })
-    const offSh = window.relay.onShared((m) => setNotices((n) => [...n, m]))
+    const offSh = window.relay.onShared((m) => toasts.push('info', m))
     const offRem = window.relay.onReminder((id) => {
       const label = accountsRef.current.find((a) => a.id === id)?.label ?? id
-      setNotices((n) => [...n, `${label} ya tiene cuota disponible`])
+      toasts.push('success', `${label} ya tiene cuota disponible`)
       void loadStatus(id, true)
     })
     return () => (offHit(), offFocus(), offStale(), offSession(), offRem(), offSh())
   }, [loadStatus])
 
   const open = (t: Tab, replace?: number) => {
-    if (exitedRef.current.has(t.ptyId)) (t = { ...t, exited: true }), t.install && detect() // exited before the tab existed
+    if (exitedRef.current.has(t.ptyId)) (t = { ...t, exited: true }), t.install && detect(), t.login && void markChecked(t.accountId, t.ptyId) // exited before the tab existed
     setTabs((ts) => (replace === undefined ? [...ts, t] : ts.map((x) => (x.ptyId === replace ? t : x))))
     setCur(t.ptyId)
     setView('main')
@@ -277,10 +278,15 @@ export function App() {
       if (!t?.sessionId || !t.cwd) throw new Error('Abre primero una sesión de Claude')
       if (t.stale) throw new Error(STALE)
       if (to.id === t.accountId) return
-      if (ask && !(await modal.confirm('Continuar en otra cuenta', `Sesión "${t.title}" → cuenta "${to.label}". El proceso actual se detendrá y se reanudará la misma conversación en la otra cuenta.`, `Continuar en ${to.label}`))) return
+      if (ask) {
+        const auto = (await window.relay.prefs.get()).handoff.autoContinue && to.provider === 'claude'
+        const msg = `Sesión "${t.title}" → cuenta "${to.label}". El proceso actual se detendrá y se reanudará la misma conversación en la otra cuenta.${auto ? `\nLa sesión continuará automáticamente en ${to.label}.` : ''}`
+        if (!(await modal.confirm('Continuar en otra cuenta', msg, `Continuar en ${to.label}`, false, true))) return
+      }
       const r = await window.relay.handoff({ ptyId: t.ptyId, fromAccountId: t.accountId, toAccountId: to.id, cwd: t.cwd, sessionId: t.sessionId })
-      // nothing is typed into the new session
-      open({ ptyId: r.ptyId, accountId: to.id, cwd: t.cwd, title: t.title, hint: `Sesión continuada en ${to.label}. Escribe "continúa" para seguir.`, ...(r.sessionId ? { sessionId: r.sessionId } : {}) }, t.ptyId)
+      // the only thing sent to the new session is the CLI's initial prompt (argv), and only if the user enabled auto-continue
+      open({ ptyId: r.ptyId, accountId: to.id, cwd: t.cwd, title: t.title, hint: r.autoContinued ? `Sesión continuada automáticamente en ${to.label}.` : `Sesión continuada en ${to.label}. Escribe "continúa" para seguir.`, ...(r.sessionId ? { sessionId: r.sessionId } : {}) }, t.ptyId)
+      toasts.push('success', `Sesión "${t.title}" continúa en ${to.label}`)
       setActive(to.id)
       dropHit(t.ptyId)
       await refresh()
@@ -299,7 +305,8 @@ export function App() {
   const newSession = () => active && start('new', active)
   const recent = Object.entries(sessMap).flatMap(([p, l]) => l.map((s) => ({ p, s }))).sort((a, b) => b.s.mtimeMs - a.s.mtimeMs).slice(0, 8)
 
-  if (!loaded) return <>{modal.node}</>
+
+  if (!loaded) return <div className="grid h-full place-items-center"><span className="loading loading-spinner loading-lg text-primary" />{modal.node}</div>
   if (ob)
     return (
       <>
@@ -308,7 +315,6 @@ export function App() {
           cli={cli}
           statuses={statuses}
           projects={projects}
-          error={error}
           modal={modal}
           onInstall={install}
           installTab={tabs.find((t) => t.install)}
@@ -319,12 +325,18 @@ export function App() {
           addProject={addProject}
           finish={() => (setTabs((ts) => ts.filter((t) => !t.install)), setOb(null))}
         />
+        <ToastStack t={toasts} />
         {modal.node}
       </>
     )
 
   const targets = tab ? accounts.filter((a) => a.id !== tab.accountId && a.provider === accounts.find((x) => x.id === tab.accountId)?.provider) : []
   const canHand = !!tab?.sessionId && !tab.stale
+  const tabStatus = (t: Tab) => {
+    const lim = statuses[t.accountId]?.limited
+    return t.exited ? { c: 'badge-ghost', l: 'finalizada', tone: 'off' as const } : t.stale ? { c: 'badge-warning', l: 'sesión cambiada', tone: 'warn' as const } : lim ? { c: 'badge-warning', l: 'cuenta limitada', tone: 'warn' as const } : { c: 'badge-success', l: t.login ? 'inicio de sesión' : t.install ? 'instalador' : 'activa', tone: 'ok' as const }
+  }
+  const hitAcc = hit && accounts.find((a) => a.id === hit.accountId)
 
   return (
     <div className="flex h-full">
@@ -349,24 +361,25 @@ export function App() {
         refreshStatus={(id) => void loadStatus(id, true)}
         openSettings={() => setView('settings')}
       />
-      <main className="relative flex min-w-0 flex-1 flex-col">
-        <header className="drag flex items-center border-b border-line pr-3">
-          <div className="flex min-w-0 flex-1 overflow-x-auto pt-8 text-xs">
+      <main className="relative flex min-w-0 flex-1 flex-col bg-base-100">
+        <header className="drag flex items-end gap-2 border-b border-base-300 bg-base-200 pr-3 pt-9">
+          <div role="tablist" className="tabs tabs-lift nodrag min-w-0 flex-1 flex-nowrap overflow-x-auto">
             {tabs.map((t) => (
-              <div key={t.ptyId} className={`nodrag flex shrink-0 items-center gap-2 border-r border-line px-3 py-1.5 ${t.ptyId === cur ? 'bg-white/10 text-fg' : 'text-muted hover:bg-white/5'}`}>
-                <button onClick={() => setCur(t.ptyId)} className={`flex items-center gap-2 ${t.exited ? 'line-through' : ''}`}>
-                  {t.accountId && <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px]">{accLabel(t.accountId)}</span>}
-                  {t.title}
+              <div key={t.ptyId} role="presentation" className={`tab shrink-0 gap-2 text-xs ${t.ptyId === cur ? 'tab-active' : 'opacity-70'} ${t.exited ? 'line-through' : ''}`}>
+                <button role="tab" aria-selected={t.ptyId === cur} onClick={() => setCur(t.ptyId)} className="flex items-center gap-2">
+                  {t.accountId && <span className="badge badge-soft badge-sm">{accLabel(t.accountId)}</span>}
+                  <span className="max-w-40 truncate">{t.title}</span>
                 </button>
-                <button title="Cerrar" aria-label="Cerrar pestaña" onClick={() => closeTab(t)}>✕</button>
+                <button className="btn btn-ghost btn-xs btn-circle" title="Cerrar pestaña" aria-label={`Cerrar pestaña ${t.title}`} onClick={(e) => (e.stopPropagation(), void closeTab(t))}>✕</button>
               </div>
             ))}
           </div>
-          {tab?.accountId && (
-            <div className="pt-8">
+          {tab?.accountId && !tab.login && (
+            <div className="pb-1">
               <Dropdown
                 title={canHand ? 'Continuar esta sesión en otra cuenta' : 'Necesitas una sesión de Claude abierta y con transcripción'}
                 trigger={<>Continuar en otra cuenta <IconChevron open /></>}
+                btnClass="btn btn-sm btn-soft btn-primary"
                 items={targets.map((a) => {
                   const s = statuses[a.id]
                   const off = !canHand || s?.loggedIn !== true || !!s.limited
@@ -376,133 +389,151 @@ export function App() {
             </div>
           )}
         </header>
-        {error && (
-          <div className="flex justify-between border-b border-line bg-bad/10 px-3 py-1 text-xs text-bad">
-            <span>{error}</span>
-            <button onClick={() => setError('')}>✕</button>
+        {tab?.accountId && (
+          <div className="flex items-center gap-2 border-b border-base-300 bg-base-100 px-3 py-1.5 text-xs">
+            <IconFolder /> <b className="truncate">{tab.cwd ? base(tab.cwd) : tab.login ? 'inicio de sesión' : '—'}</b>
+            <span className="opacity-40">·</span>
+            <span className="badge badge-soft badge-primary badge-sm">{accLabel(tab.accountId)}</span>
+            <span className={`badge badge-soft badge-sm gap-1 ${tabStatus(tab).c}`}><Dot tone={tabStatus(tab).tone} />{tabStatus(tab).l}</span>
+            <span className="flex-1" />
+            <button className="btn btn-ghost btn-xs" onClick={() => void closeTab(tab)} title="Cierra la pestaña y detiene su proceso">Cerrar pestaña</button>
           </div>
         )}
         {claudeMissing && (
-          <div className="flex items-center justify-between border-b border-line bg-warn/10 px-3 py-1 text-xs text-warn">
+          <div role="alert" className="alert alert-warning alert-soft rounded-none py-1 text-xs">
             <span>Claude Code no está instalado.</span>
-            <button className="btn" onClick={install}>Instalar Claude Code</button>
+            <button className="btn btn-xs" onClick={install}>Instalar Claude Code</button>
           </div>
         )}
-        {notices.map((n, i) => (
-          <div key={i} className="flex justify-between border-b border-line bg-ok/10 px-3 py-1 text-xs text-ok">
-            <span className="whitespace-pre-wrap break-all">{n}</span>
-            <button onClick={() => setNotices((ns) => ns.filter((_, j) => j !== i))}>✕</button>
-          </div>
-        ))}
         {tab?.hint && (
-          <div className="flex justify-between border-b border-line bg-white/5 px-3 py-1 text-xs text-muted">
-            {tab.hint}
-            <button onClick={() => setTabs((ts) => ts.map((x) => (x.ptyId === tab.ptyId ? { ...x, hint: '' } : x)))}>✕</button>
+          <div role="status" className="alert alert-soft rounded-none py-1 text-xs">
+            <span>{tab.hint}</span>
+            <button className="btn btn-ghost btn-xs btn-circle" aria-label="Descartar" onClick={() => setTabs((ts) => ts.map((x) => (x.ptyId === tab.ptyId ? { ...x, hint: '' } : x)))}>✕</button>
           </div>
         )}
         <div className="min-h-0 flex-1">
-          {tabs.map((t) => (
-            <TerminalPane key={t.ptyId} ptyId={t.ptyId} visible={t.ptyId === cur} />
-          ))}
-          {!tab && (
-            <div className="mx-auto max-w-lg space-y-4 p-8">
-              <h2 className="text-lg font-semibold">Nueva sesión</h2>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="text-xs text-muted">
-                  Proyecto
-                  <select className="input mt-1" value={cwd ?? ''} onChange={(e) => setCwd(e.target.value || null)}>
-                    <option value="">Elige un proyecto…</option>
-                    {projects.map((p) => <option key={p} value={p}>{base(p)}</option>)}
-                  </select>
-                </label>
-                <label className="text-xs text-muted">
-                  Cuenta
-                  <select className="input mt-1" value={active ?? ''} onChange={(e) => setActive(e.target.value)}>
-                    {accounts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
-                  </select>
-                </label>
+          {tabs.map((t) =>
+            t.login ? (
+              <div key={t.ptyId} className={`h-full overflow-y-auto p-6 ${t.ptyId === cur ? 'fade-in' : 'hidden'}`}>
+                <div className="mx-auto max-w-xl">
+                  <LoginPanel
+                    ptyId={t.ptyId}
+                    running={!t.exited}
+                    {...(t.exited && t.checked ? { status: statuses[t.accountId] ?? { accountId: t.accountId, loggedIn: null, tokens5h: 0 } } : {})}
+                    onRetry={() => void closeTab(t).then(() => start('login', t.accountId))}
+                    onContinue={() => void closeTab(t)}
+                    continueLabel="Cerrar"
+                  />
+                </div>
               </div>
-              <div className="flex gap-2">
-                <button className="btn-primary" disabled={claudeMissing} title={claudeMissing ? CLAUDE_MISSING : ''} onClick={() => void newSession()}>Nueva sesión</button>
-                <button className="btn" onClick={addProject}>Agregar proyecto…</button>
+            ) : (
+              <TerminalPane key={t.ptyId} ptyId={t.ptyId} visible={t.ptyId === cur} />
+            )
+          )}
+          {!tab && (
+            <div className="mx-auto max-w-lg p-8">
+              <div className="card card-border bg-base-100 shadow-sm">
+                <div className="card-body gap-4">
+                  <h2 className="card-title">Nueva sesión</h2>
+                  <div className="grid grid-cols-2 gap-3">
+                    <fieldset className="fieldset">
+                      <legend className="fieldset-legend">Proyecto</legend>
+                      <select className="select w-full" aria-label="Proyecto" value={cwd ?? ''} onChange={(e) => setCwd(e.target.value || null)}>
+                        <option value="">Elige un proyecto…</option>
+                        {projects.map((p) => <option key={p} value={p}>{base(p)}</option>)}
+                      </select>
+                    </fieldset>
+                    <fieldset className="fieldset">
+                      <legend className="fieldset-legend">Cuenta</legend>
+                      <select className="select w-full" aria-label="Cuenta" value={active ?? ''} onChange={(e) => setActive(e.target.value)}>
+                        {accounts.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+                      </select>
+                    </fieldset>
+                  </div>
+                  <div className="card-actions">
+                    <button className="btn btn-primary" disabled={claudeMissing} title={claudeMissing ? CLAUDE_MISSING : ''} onClick={() => void newSession()}>Nueva sesión</button>
+                    <button className="btn btn-ghost" onClick={addProject}>Agregar proyecto…</button>
+                  </div>
+                </div>
               </div>
               {recent.length > 0 && (
-                <div>
-                  <div className="mb-1 text-xs uppercase tracking-wide text-muted">Sesiones recientes</div>
+                <ul className="menu mt-4 w-full p-0">
+                  <li className="menu-title">Sesiones recientes</li>
                   {recent.map(({ p, s }) => (
-                    <button key={`${s.accountId}${s.id}`} disabled={claudeMissing} onClick={() => (setCwd(p), void start('resume', s.accountId, s, p))} className="block w-full rounded-card px-2 py-1.5 text-left text-xs hover:bg-white/5 disabled:opacity-50">
-                      <div className="truncate text-sm">{s.title}</div>
-                      <div className="text-muted">{base(p)} · {accLabel(s.accountId)} · {ago(s.mtimeMs)}</div>
-                    </button>
+                    <li key={`${s.accountId}${s.id}`} className={claudeMissing ? 'menu-disabled' : ''}>
+                      <button disabled={claudeMissing} onClick={() => (setCwd(p), void start('resume', s.accountId, s, p))} className="flex-col items-start gap-0 text-left">
+                        <span className="w-full truncate text-sm">{s.title}</span>
+                        <span className="text-xs opacity-60">{base(p)} · {accLabel(s.accountId)} · {ago(s.mtimeMs)}</span>
+                      </button>
+                    </li>
                   ))}
-                </div>
+                </ul>
               )}
             </div>
           )}
         </div>
-        {view === 'settings' && (
-          <Settings
-            accounts={accounts}
-            statuses={statuses}
-            cli={cli}
-            error={error}
-            onClose={() => setView('main')}
-            onDetect={detect}
-            onInstall={install}
-            setShared={setShared}
-            rename={rename}
-            remove={remove}
-            add={addAccount}
-            login={(a) => start('login', a.id)}
-          />
-        )}
       </main>
-      {hit && (
-        <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/60">
-          <div className="w-96 rounded border border-line bg-surface p-4 text-sm">
-            <b>{accounts.find((a) => a.id === hit.accountId)?.label} llegó a su límite ({hit.kind})</b>
-            <p className="mb-3 text-xs text-muted">Se reinicia {hit.resetText}. Relay no cambia de cuenta por sí solo.</p>
-            <p className="mb-2 truncate text-xs text-muted">Sesión: {hitTab?.title ?? '(pestaña cerrada)'}</p>
-            {hitTab?.stale && <p className="mb-2 text-xs text-bad">{STALE}</p>}
-            {modalError && <p className="mb-2 text-xs text-bad">{modalError}</p>}
-            <div className="space-y-1">
-              {accounts
-                .filter((a) => a.id !== hit.accountId && a.provider === accounts.find((x) => x.id === hit.accountId)?.provider)
-                .map((a) => {
-                  const s = statuses[a.id]
-                  const off = s?.loggedIn !== true || !!s.limited
-                  return (
-                    <button
-                      key={a.id}
-                      disabled={off || !hitTab || hitTab.stale}
-                      onClick={() =>
-                        run(async () => {
-                          // the click is the confirmation, but the target may have changed since the card was drawn
-                          const f = await window.relay.accounts.status(a.id, true)
-                          setStatuses((m) => ({ ...m, [a.id]: f }))
-                          if (f.loggedIn !== true || f.limited) throw new Error(`${a.label} ya no está disponible (${f.limited ? 'limitada' : 'sin sesión'})`)
-                          await handoff(a, hitTab, false, setModalError)
-                        }, setModalError)
-                      }
-                      className="block w-full rounded border border-line px-3 py-2 text-left enabled:hover:bg-white/10 disabled:opacity-40"
-                    >
-                      Continuar en {a.label}
-                      <span className="block text-xs text-muted">
-                        {!s ? '…' : s.loggedIn !== true ? 'sin sesión' : s.limited ? `limitada hasta ${s.limited.resetText}` : 'disponible'}
-                      </span>
-                    </button>
-                  )
-                })}
-            </div>
-            {!hit.resetAt && <p className="mt-2 text-xs text-muted">No se pudo interpretar la hora de reinicio, así que no se puede programar un recordatorio.</p>}
-            {hits.length > 1 && <p className="mt-2 text-xs text-muted">{hits.length - 1} aviso(s) más en cola.</p>}
-            <div className="mt-3 flex justify-end gap-2">
-              <button className="btn" disabled={!hit.resetAt} title={hit.resetAt ? '' : 'No se pudo leer la hora de reinicio; no hay recordatorio posible'} onClick={wait}>Esperar al reinicio</button>
-              <button className="btn" onClick={() => dropHit()}>Cerrar</button>
-            </div>
-          </div>
-        </div>
+      {view === 'settings' && (
+        <Settings
+          accounts={accounts}
+          statuses={statuses}
+          cli={cli}
+          onClose={() => setView('main')}
+          onDetect={detect}
+          onInstall={install}
+          setShared={setShared}
+          rename={rename}
+          remove={remove}
+          add={addAccount}
+          login={(a) => start('login', a.id)}
+        />
       )}
+      {hit && (
+        <Dialog key={hit.ptyId} label="Límite alcanzado" onClose={() => dropHit()} boxClass="max-w-md">
+          <h3 className="text-base font-semibold">{hitAcc?.label} llegó a su límite ({hit.kind})</h3>
+          <p className="mt-1 text-sm opacity-70">Se reinicia {hit.resetText}. Relay no cambia de cuenta por sí solo.</p>
+          <p className="mt-2 truncate text-xs opacity-60">Sesión: {hitTab?.title ?? '(pestaña cerrada)'}</p>
+          {hitTab?.stale && <div role="alert" className="alert alert-error alert-soft mt-2 text-xs">{STALE}</div>}
+          {modalError && <div role="alert" className="alert alert-error alert-soft mt-2 text-xs">{modalError}</div>}
+          <div className="mt-3 space-y-2">
+            {accounts
+              .filter((a) => a.id !== hit.accountId && a.provider === hitAcc?.provider)
+              .map((a) => {
+                const s = statuses[a.id]
+                const off = s?.loggedIn !== true || !!s.limited
+                return (
+                  <button
+                    key={a.id}
+                    disabled={off || !hitTab || hitTab.stale}
+                    onClick={() =>
+                      run(async () => {
+                        // the click is the confirmation, but the target may have changed since the card was drawn
+                        const f = await window.relay.accounts.status(a.id, true)
+                        setStatuses((m) => ({ ...m, [a.id]: f }))
+                        if (f.loggedIn !== true || f.limited) throw new Error(`${a.label} ya no está disponible (${f.limited ? 'limitada' : 'sin sesión'})`)
+                        await handoff(a, hitTab, false, setModalError)
+                      }, setModalError)
+                    }
+                    className="btn btn-outline h-auto w-full flex-col items-start gap-0 py-2 text-left font-normal"
+                  >
+                    <span className="font-medium">Continuar en {a.label}</span>
+                    <span className="text-xs opacity-60">
+                      {!s ? '…' : s.loggedIn !== true ? 'sin sesión' : s.limited ? `limitada hasta ${s.limited.resetText}` : 'disponible'}
+                    </span>
+                    {autoCont && !off && a.provider === 'claude' && <span className="text-xs text-primary">La sesión continuará automáticamente en {a.label}</span>}
+                  </button>
+                )
+              })}
+          </div>
+          {!hit.resetAt && <p className="mt-2 text-xs opacity-60">No se pudo interpretar la hora de reinicio, así que no se puede programar un recordatorio.</p>}
+          {hits.length > 1 && <p className="mt-2 text-xs opacity-60">{hits.length - 1} aviso(s) más en cola.</p>}
+          <div className="modal-action">
+            <button className="btn btn-ghost" disabled={!hit.resetAt} title={hit.resetAt ? '' : 'No se pudo leer la hora de reinicio; no hay recordatorio posible'} onClick={wait}>Esperar al reinicio</button>
+            <button className="btn" data-autofocus onClick={() => dropHit()}>Cerrar</button>
+          </div>
+        </Dialog>
+      )}
+      <ToastStack t={toasts} />
       {modal.node}
     </div>
   )

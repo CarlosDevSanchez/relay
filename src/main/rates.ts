@@ -29,7 +29,14 @@ else
   flat=$(printf '%s' "$json" | tr -d ' \\n\\r\\t')
   out=
   for w in five_hour:5h seven_day:7d; do
-    p=$(printf '%s' "$flat" | sed -n "s/.*\\"\${w%%:*}\\":{[^}]*\\"used_percentage\\":\\([0-9.]*\\).*/\\1/p")
+    r=\${flat#*\\"\${w%%:*}\\":}
+    [ "$r" = "$flat" ] && continue
+    r=\${r%%\\"seven_day\\"*} # five_hour stops at the next window, so a missing percentage is not borrowed
+    q=\${r#*\\"used_percentage\\":}
+    [ "$q" = "$r" ] && continue
+    p=\${q%%[!0-9.]*}
+    case "$p" in ""|.*) continue ;; esac
+    case \${q#"$p"} in [eE]*) continue ;; esac
     [ -n "$p" ] && out="\${out:+$out · }\${w##*:} \${p%%.*}%"
   done
   [ -n "$out" ] && printf '%s' "$out"
@@ -42,6 +49,7 @@ export function writeStatusScript(home: string): string {
   const file = statusScriptPath(home)
   mkdirSync(join(home, 'bin'), { recursive: true })
   mkdirSync(statusDir(home), { recursive: true, mode: 0o700 })
+  chmodSync(statusDir(home), 0o700) // an existing dir keeps its old mode otherwise
   writeFileSync(`${file}.tmp`, STATUS_SCRIPT, { mode: 0o755 })
   chmodSync(`${file}.tmp`, 0o755)
   renameSync(`${file}.tmp`, file)
@@ -50,18 +58,34 @@ export function writeStatusScript(home: string): string {
 
 const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`
 
-/** Inline JSON for `claude --settings` (`--settings <file-or-json>` in `claude --help`). */
-export const claudeSettingsArgs = (script: string): string[] => ['--settings', JSON.stringify({ statusLine: { type: 'command', command: shq(script) } })]
+/** The user's status line settings that Relay carries over so its chained line behaves as theirs. */
+export interface UserStatusLine {
+  command: string
+  refreshInterval?: number
+  padding?: number
+}
 
-/** The user's own `statusLine.command` (read-only; absent / invalid / not a command = undefined) so Relay's script can chain it. */
-export function readUserStatusLine(configDir: string): string | undefined {
+/** Inline JSON for `claude --settings` (`--settings <file-or-json>` in `claude --help`); the user's `refreshInterval` / `padding` ride along. */
+export const claudeSettingsArgs = (script: string, user?: Omit<UserStatusLine, 'command'>): string[] => [
+  '--settings',
+  JSON.stringify({ statusLine: { type: 'command', command: shq(script), ...(user?.refreshInterval !== undefined ? { refreshInterval: user.refreshInterval } : {}), ...(user?.padding !== undefined ? { padding: user.padding } : {}) } })
+]
+
+/** The user's own `statusLine` (read-only; absent / invalid / not a command = undefined) so Relay's script can chain it. The chained command runs under /bin/sh. */
+export function readUserStatus(configDir: string): UserStatusLine | undefined {
   try {
     const s = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'))?.statusLine
-    return s?.type === 'command' && typeof s.command === 'string' && s.command.trim() ? s.command : undefined
+    if (s?.type !== 'command' || typeof s.command !== 'string' || !s.command.trim()) return undefined
+    return {
+      command: s.command,
+      ...(typeof s.refreshInterval === 'number' && Number.isFinite(s.refreshInterval) && s.refreshInterval > 0 ? { refreshInterval: s.refreshInterval } : {}),
+      ...(typeof s.padding === 'number' && Number.isFinite(s.padding) && s.padding >= 0 ? { padding: s.padding } : {})
+    }
   } catch {
     return undefined
   }
 }
+export const readUserStatusLine = (configDir: string): string | undefined => readUserStatus(configDir)?.command
 
 /** Env for a Claude session pty: where to save the JSON and which user status line to chain. */
 export const statusEnv = (home: string, a: Account): Record<string, string> => {
@@ -71,8 +95,8 @@ export const statusEnv = (home: string, a: Account): Record<string, string> => {
 
 const pct = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 
-/** Defensive parse of the status line JSON: only the rate-limit windows and the session id are read. */
-export function parseStatusJson(text: string): { sessionId?: string; windows: UsageWindow[] } | undefined {
+/** Defensive parse of the status line JSON: only the rate-limit windows are read. */
+export function parseStatusJson(text: string): { windows: UsageWindow[] } | undefined {
   let d: any
   try {
     d = JSON.parse(text)
@@ -85,7 +109,7 @@ export function parseStatusJson(text: string): { sessionId?: string; windows: Us
     const w = d.rate_limits?.[key]
     if (pct(w?.used_percentage) && pct(w.resets_at)) windows.push({ id, pct: Math.min(100, Math.max(0, w.used_percentage)), resetsAt: w.resets_at * 1000 })
   }
-  return { ...(typeof d.session_id === 'string' && d.session_id.length <= 100 ? { sessionId: d.session_id } : {}), windows }
+  return { windows }
 }
 
 export interface TrackerDeps {

@@ -68,7 +68,7 @@ const setup = (name) => {
 const launch = (d, extra = {}) => {
   const env = { ...process.env, RELAY_HOME: d.relayHome, HOME: d.home, PATH: `${d.bin}:/usr/bin:/bin`, ...extra }
   delete env.ELECTRON_RUN_AS_NODE
-  return electron.launch({ args: [root], env })
+  return electron.launch({ args: [root, `--user-data-dir=${join(d.home, 'userdata')}`], env }) // own Chromium profile: localStorage (sidebar UI state) never leaks between scenarios or into a real app profile
 }
 
 // ---- scenario 1: claude present, candidate dirs, onboarding -> dashboard ----
@@ -115,7 +115,7 @@ const launch = (d, extra = {}) => {
 
     const card = page.getByTestId('account-card')
     await card.getByText('Test', { exact: true }).waitFor({ timeout: t })
-    await card.getByText('test@example.com').waitFor({ timeout: t })
+    await card.getByTestId('card-status').getByText('test@example.com').waitFor({ timeout: t }) // compact card: the status text carries the email
     await page.locator('aside').getByTestId('logo').waitFor({ timeout: t }) // logo in the sidebar header
     await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
     await page.getByRole('tab').first().waitFor({ timeout: t })
@@ -303,7 +303,7 @@ const launch = (d, extra = {}) => {
     const cards = page.getByTestId('account-card')
     await cards.nth(2).waitFor({ timeout: t })
     assert.equal(await cards.getByTestId('provider-badge').filter({ hasText: 'codex' }).count(), 2, 'Codex accounts show a provider badge')
-    await cards.filter({ hasText: 'Cx1' }).getByText('sesión iniciada').waitFor({ timeout: t }) // `codex login status` exit 0
+    await cards.filter({ hasText: 'Cx1' }).getByTestId('card-status').getByText('sesión iniciada').waitFor({ timeout: t }) // `codex login status` exit 0
     await page.getByRole('button', { name: 'hola codex' }).first().waitFor({ timeout: t }) // session listed from the rollout (title = first user message)
     await page.screenshot({ path: join(shots, 'codex.png') })
 
@@ -449,8 +449,53 @@ const launch = (d, extra = {}) => {
     const alfa = cards.filter({ hasText: 'Alfa' })
     const beta = cards.filter({ hasText: 'Beta' })
     const side = page.locator('aside')
+    // every visible element of the sidebar stays inside its box (and the scroll area never scrolls sideways)
+    const inside = async (state) => {
+      const bad = await page.evaluate(() => {
+        const sb = document.querySelector('aside').getBoundingClientRect()
+        const out = []
+        for (const el of document.querySelectorAll('aside *')) {
+          if (getComputedStyle(el).visibility === 'hidden') continue
+          const r = el.getBoundingClientRect()
+          if (!r.width || !r.height) continue
+          if (r.left < sb.left - 0.5 || r.right > sb.right + 0.5) out.push(`${el.tagName}.${String(el.className).slice(0, 40)} ${Math.round(r.left - sb.left)}..${Math.round(r.right - sb.left)} of ${Math.round(sb.width)}`)
+        }
+        const sc = document.querySelector('aside .overflow-y-auto')
+        if (sc.scrollLeft !== 0) out.push(`scrollLeft ${sc.scrollLeft}`)
+        // the shell never scrolls sideways
+        const de = document.documentElement
+        if (de.scrollWidth > de.clientWidth) out.push(`html scrollWidth ${de.scrollWidth} > ${de.clientWidth}`)
+        if (window.scrollX !== 0) out.push(`scrollX ${window.scrollX}`)
+        for (const sel of ['main', 'aside']) {
+          const e = document.querySelector(sel)
+          if (e.scrollWidth > e.clientWidth) out.push(`${sel} scrollWidth ${e.scrollWidth} > ${e.clientWidth}`)
+        }
+        return out
+      })
+      assert.deepEqual(bad, [], `sidebar content outside its box / page scrolls sideways (${state})`)
+      // focusing every focusable must not scroll the shell either
+      const sx = await page.evaluate(() => {
+        for (const el of document.querySelectorAll('button, [tabindex], a, input, select, textarea')) {
+          if (el.closest('dialog') || getComputedStyle(el).visibility === 'hidden') continue
+          el.focus()
+        }
+        document.activeElement?.blur()
+        return [window.scrollX, document.documentElement.scrollLeft, document.body.scrollLeft, document.querySelector('aside .overflow-y-auto').scrollLeft]
+      })
+      assert.deepEqual(sx, [0, 0, 0, 0], `focus pass scrolled the shell (${state})`)
+    }
     assert.equal(await side.getByRole('button', { name: /sesión vieja/ }).count(), 0, 'a transcript Relay did not create is not in the sidebar')
+    // cards are compact by default: no detail rows, the section is not collapsed
+    for (const c of [alfa, beta]) {
+      assert.equal(await c.getAttribute('data-expanded'), 'false', 'compact by default')
+      assert.equal(await c.getByTestId('card-details').isVisible(), false)
+    }
+    assert.equal(await page.getByTestId('account-dots').count(), 0)
 
+    // clicking a card body only selects it (no toggle): a card expands with its chevron
+    await alfa.click()
+    assert.equal(await alfa.getAttribute('data-expanded'), 'false')
+    await inside('compact, no usage')
     // new sessions: one per account, started with Relay's status line (--settings) and the env that locates the status file
     await alfa.click()
     await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
@@ -469,7 +514,9 @@ const launch = (d, extra = {}) => {
     assert.equal(readFileSync(join(cfg.a, 'settings.json'), 'utf8'), userSettings, 'user settings are read-only')
     assert.ok(!existsSync(join(cfg.b, 'settings.json')), 'no settings file is created in the account dir')
 
-    // official usage bars
+    // official usage bars (cards expanded with their chevrons)
+    await alfa.getByTestId('card-toggle').click()
+    await beta.getByTestId('card-toggle').click()
     const bars = alfa.getByTestId('usage-5h')
     await bars.getByText('48%').waitFor({ timeout: t })
     await bars.getByText('Sesión 5h').waitFor({ timeout: t })
@@ -480,7 +527,28 @@ const launch = (d, extra = {}) => {
     assert.equal(readFileSync(join(d.relayHome, 'status', 'aaaaaaaa.json'), 'utf8'), readFileSync(fixture, 'utf8'), 'the script saved the CLI JSON')
     assert.equal(readFileSync(join(tmp, 'statusline-out.cfg-a'), 'utf8'), 'USERLINE', 'chained: the user status line output is what the CLI shows')
     assert.equal(readFileSync(join(tmp, 'statusline-out.cfg-b'), 'utf8'), '5h 48% · 7d 31%', 'default compact line')
+    // expanded: the detail rows are visible, the compact line is replaced
+    assert.equal(await alfa.getAttribute('data-expanded'), 'true')
+    assert.equal(await alfa.getByTestId('mini-5h').count(), 0)
     await page.screenshot({ path: join(shots, 'usage.png') })
+    await page.waitForTimeout(500)
+    await inside('expanded')
+    await side.screenshot({ path: join(shots, 'sidebar-expanded.png') })
+    // collapse with the toggle: two thin bars with the percentages, details hidden
+    await alfa.getByTestId('card-toggle').click()
+    await beta.getByTestId('card-toggle').click()
+    const mini = alfa.getByTestId('mini-5h')
+    await mini.getByText('48%').waitFor({ timeout: t })
+    await alfa.getByTestId('mini-7d').getByText('31%').waitFor({ timeout: t })
+    await bars.waitFor({ state: 'hidden', timeout: t })
+    assert.equal(await alfa.getAttribute('data-expanded'), 'false')
+    assert.match(await alfa.getByTestId('usage-mini').getAttribute('data-tip'), /Sesión 5h 48% · se reinicia .* · actualizado/, 'reset times are in the tooltip')
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(500) // collapse transition
+    await inside('compact')
+    await side.screenshot({ path: join(shots, 'sidebar-compact.png') })
+    await alfa.getByTestId('card-toggle').click() // expanded again for the checks below
+    await bars.waitFor({ timeout: t })
 
     // 92% crosses the 90% threshold: one warning per window
     status(92, 31)
@@ -490,6 +558,10 @@ const launch = (d, extra = {}) => {
     // 100% = limited (same state as a transcript limit: the card says so and the account is no handoff target)
     status(100, 31)
     await alfa.getByText(/Limitada hasta/).waitFor({ timeout: t })
+    // a limited account stands out even when compact: error colour on the dot and the bar
+    await alfa.getByTestId('card-toggle').click()
+    assert.match(await alfa.getByTestId('mini-5h').locator('progress').getAttribute('class'), /progress-error/)
+    assert.equal(await alfa.locator('.status-error').count(), 1, 'the dot of a limited account is red')
 
     // history: the new sessions show up once they have a transcript; the old one only after adopting it
     const idA = /--session-id (\S+)/.exec(calls().find((c) => c.startsWith(`${cfg.a}|--session-id `)))[1]
@@ -540,6 +612,42 @@ const launch = (d, extra = {}) => {
     await until(() => calls().filter((c) => c.includes('--session-id')).length > n)
     await page.waitForTimeout(1500)
     assert.equal(mine().length, before, 'statusLine off: no --settings')
+
+    // collapsing "Cuentas" leaves one dot per account (tooltip: label + usage); the UI state survives a reload
+    for (const [c, want] of [[alfa, 'false'], [beta, 'true']]) if ((await c.getAttribute('data-expanded')) !== want) await c.getByTestId('card-toggle').click() // beta expanded, alfa compact
+    await page.getByRole('button', { name: 'Contraer Cuentas' }).click()
+    const dots = page.getByTestId('account-dot')
+    await dots.nth(1).waitFor({ timeout: t })
+    assert.equal(await dots.count(), 2)
+    await alfa.waitFor({ state: 'hidden', timeout: t })
+    assert.match(await dots.first().getAttribute('aria-label'), /^Alfa/)
+    assert.match(await dots.first().getAttribute('aria-label'), /5h 100%/)
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(500)
+    await inside('collapsed')
+    await side.screenshot({ path: join(shots, 'sidebar-collapsed.png') })
+    // minimum window width, hovering a dot (its tooltip opens inward)
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(900, 600))
+    await page.waitForTimeout(500)
+    await dots.last().hover()
+    await page.waitForTimeout(300)
+    await inside('collapsed, 900px window')
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.reload()
+    await page.getByTestId('account-dot').nth(1).waitFor({ timeout: t })
+    assert.equal(await cards.first().isVisible(), false, 'collapsed state survives a reload')
+    await page.getByRole('button', { name: 'Expandir Cuentas' }).click()
+    await cards.nth(1).waitFor({ timeout: t })
+    await page.reload()
+    await cards.nth(1).waitFor({ timeout: t })
+    assert.equal(await page.getByTestId('account-dots').count(), 0)
+    assert.equal(await alfa.getAttribute('data-expanded'), 'false', 'expanded cards survive a reload')
+    assert.equal(await beta.getAttribute('data-expanded'), 'true')
+    // "Proyectos" collapses the same way
+    await page.getByRole('button', { name: 'Contraer Proyectos' }).click()
+    await page.getByTestId('project-dots').waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Expandir Proyectos' }).click()
+    await page.getByTestId('project-dots').waitFor({ state: 'detached', timeout: t })
   } finally {
     await app.close()
   }

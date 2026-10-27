@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -8,7 +8,7 @@ import { fmtReset, limitedFromUsage, liveWindows, usageLevel, warnText, windowTi
 import { parseCodexRates, scanCodexRates } from '../src/main/codex'
 import { checkWarnAt, loadPrefs, savePrefs } from '../src/main/prefs'
 import { providers } from '../src/main/providers'
-import { STATUS_SCRIPT, claudeSettingsArgs, parseStatusJson, readUserStatusLine, statusEnv, statusScriptPath, trackUsage, writeStatusScript } from '../src/main/rates'
+import { STATUS_SCRIPT, claudeSettingsArgs, parseStatusJson, readUserStatus, readUserStatusLine, statusEnv, statusScriptPath, trackUsage, writeStatusScript } from '../src/main/rates'
 import { adoptable, forgetSession, loadRegistry, register, registerHandoff, touchSession, updateRegistry, visibleSessions } from '../src/main/registry'
 import { checkSessionRef } from '../src/main/validate'
 
@@ -48,15 +48,15 @@ describe('shared usage helpers', () => {
 })
 
 describe('status line JSON', () => {
-  it('reads only the rate-limit windows and the session id, defensively', () => {
+  it('reads only the rate-limit windows, defensively', () => {
     const p = parseStatusJson(fixture(48.5, 31, NOW))!
-    expect(p.sessionId).toBe('abc')
+    expect(p).not.toHaveProperty('sessionId')
     expect(p.windows).toEqual([{ id: '5h', pct: 48.5, resetsAt: sec(NOW) * 1000 }, { id: '7d', pct: 31, resetsAt: sec(NOW + 86400_000) * 1000 }])
     expect(parseStatusJson(JSON.stringify({ cost: { total: 1 } }))).toEqual({ windows: [] })
     expect(parseStatusJson(JSON.stringify({ rate_limits: { five_hour: { used_percentage: 'x', resets_at: 5 }, seven_day: { used_percentage: 150, resets_at: 5 } } }))!.windows).toEqual([{ id: '7d', pct: 100, resetsAt: 5000 }])
     expect(parseStatusJson('nope')).toBeUndefined()
     expect(parseStatusJson('null')).toBeUndefined()
-    expect(parseStatusJson(JSON.stringify({ session_id: 's'.repeat(101) }))).toEqual({ windows: [] })
+    expect(parseStatusJson(JSON.stringify({ session_id: 'abc' }))).toEqual({ windows: [] })
   })
 })
 
@@ -69,6 +69,9 @@ describe('status line script', () => {
     expect(readFileSync(f, 'utf8')).toBe(STATUS_SCRIPT)
     expect(statSync(f).mode & 0o777).toBe(0o755)
     expect(statSync(join(h, 'status')).mode & 0o777).toBe(0o700)
+    chmodSync(join(h, 'status'), 0o755) // pre-existing dir with a loose mode
+    writeStatusScript(h)
+    expect(statSync(join(h, 'status')).mode & 0o777).toBe(0o700)
     expect(readdirSync(join(h, 'bin'))).toEqual(['statusline.sh'])
   })
   it('saves the JSON atomically and prints the compact line', () => {
@@ -77,6 +80,8 @@ describe('status line script', () => {
     expect(run(fixture(48.2, 31.9), { HOME_DIR: h, RELAY_STATUS_FILE: file })).toBe('5h 48% · 7d 31%')
     expect(readFileSync(file, 'utf8')).toBe(fixture(48.2, 31.9))
     expect(readdirSync(join(h, 'status'))).toEqual(['acc.json']) // no temp file left
+    expect(run('{"rate_limits":{"five_hour":{"resets_at":5},"seven_day":{"used_percentage":9,"resets_at":6}}}', { HOME_DIR: h })).toBe('7d 9%') // 5h has no percentage: not borrowed from 7d
+    expect(run('{"rate_limits":{"five_hour":{"used_percentage":1e2},"seven_day":{"used_percentage":.5}}}', { HOME_DIR: h })).toBe('') // exotic numbers: nothing
     expect(run(JSON.stringify({ rate_limits: { seven_day: { resets_at: 1, used_percentage: 7 } } }), { HOME_DIR: h, RELAY_STATUS_FILE: file })).toBe('7d 7%')
     expect(run('{"model":{}}', { HOME_DIR: h, RELAY_STATUS_FILE: file })).toBe('') // windows absent: nothing printed
     expect(run(JSON.stringify({ rate_limits: { five_hour: { used_percentage: 5, resets_at: 1 } } }, null, 2), { HOME_DIR: h, RELAY_STATUS_FILE: file })).toBe('5h 5%') // pretty-printed input
@@ -88,6 +93,21 @@ describe('status line script', () => {
     const out = run(fixture(10, 20), { HOME_DIR: h, RELAY_STATUS_FILE: file, RELAY_USER_STATUSLINE: `printf 'mine:'; wc -c | tr -d ' '` })
     expect(out.trim()).toBe(`mine:${fixture(10, 20).length}`) // the user's command got the identical JSON on stdin and replaces the compact line
     expect(readFileSync(file, 'utf8')).toBe(fixture(10, 20))
+  })
+  it('compact line survives nested objects inside the windows', () => {
+    const h = tmp()
+    const j = JSON.stringify({ rate_limits: { five_hour: { meta: { a: 1 }, used_percentage: 12.7, resets_at: 5 }, seven_day: { x: { y: {} }, used_percentage: 40, resets_at: 6 } } })
+    expect(run(j, { HOME_DIR: h })).toBe('5h 12% · 7d 40%')
+    expect(run(JSON.stringify({ rate_limits: { seven_day: { used_percentage: 3, resets_at: 6 } } }), { HOME_DIR: h })).toBe('7d 3%')
+  })
+  it('carries over the user refreshInterval and padding', () => {
+    expect(JSON.parse(claudeSettingsArgs('/s.sh', { refreshInterval: 5, padding: 2 })[1] as string).statusLine).toMatchObject({ refreshInterval: 5, padding: 2 })
+    expect(JSON.parse(claudeSettingsArgs('/s.sh')[1] as string).statusLine).toEqual({ type: 'command', command: "'/s.sh'" })
+    const d = tmp()
+    writeFileSync(join(d, 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'x', refreshInterval: 3, padding: 0 } }))
+    expect(readUserStatus(d)).toEqual({ command: 'x', refreshInterval: 3, padding: 0 })
+    writeFileSync(join(d, 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'x', refreshInterval: -1, padding: 'a' } }))
+    expect(readUserStatus(d)).toEqual({ command: 'x' })
   })
   it('builds --settings JSON with a quoted path and reads the user status line read-only', () => {
     const [flag, json] = claudeSettingsArgs("/a b/it's/statusline.sh")

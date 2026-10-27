@@ -4,7 +4,7 @@
   logs: false;
 }
 
-/* Relay themes (own palette: brand teal accent on cool navy-tinted neutrals; teal #5CC8D7 on dark, #0E7C8C on light = white text 4.9:1, dark text on teal 8.6:1). relay-light is the default theme; relay-dark (prefersdark) is used when the OS prefers dark. */
+/* Relay themes (own palette: brand teal accent on cool navy-tinted neutrals; logo teal #69C4CF on dark (dark text #0b1f2a on it = 8.4:1), darker teal #0E7C8C on light (white text 4.9:1); logo navy #1A262C). relay-light is the default theme; relay-dark (prefersdark) is used when the OS prefers dark. */
 @plugin "daisyui/theme" {
   name: 'relay-light';
   default: true;
@@ -46,7 +46,7 @@
   --color-base-200: oklch(20.5% 0.011 240);
   --color-base-300: oklch(31% 0.014 240);
   --color-base-content: oklch(92% 0.012 240);
-  --color-primary: #5cc8d7;
+  --color-primary: #69c4cf;
   --color-primary-content: #0b1f2a;
   --color-secondary: oklch(72% 0.11 255);
   --color-secondary-content: oklch(20% 0.03 255);
@@ -72,7 +72,7 @@
   --noise: 0;
 }
 
-html, body, #root { height: 100%; margin: 0; }
+html, body, #root { height: 100%; margin: 0; overflow: hidden; } /* the app shell never scrolls: tooltips / closed menus laid out past an edge must not widen the document */
 body { background: var(--color-base-100); color: var(--color-base-content); font-family: system-ui, sans-serif; font-size: 13px; }
 .drag { -webkit-app-region: drag; }
 .nodrag { -webkit-app-region: no-drag; }
@@ -80,6 +80,9 @@ body { background: var(--color-base-100); color: var(--color-base-content); font
 /* tab switch: the terminal fades in when its pane is shown */
 @keyframes relay-fade { from { opacity: 0 } to { opacity: 1 } }
 .fade-in { animation: relay-fade 0.18s ease-out; }
+.menu details { overflow: visible; } /* daisyUI uses `hidden`: a scrollable box (focus / scrollIntoView scrolled the project rows out of view) that also clipped the kebab menus */
+.menu-active .btn-ghost { --btn-fg: currentColor; color: currentColor; } /* kebab on the active (filled) project row */
+.menu-active .btn-ghost:hover { background-color: color-mix(in oklab, currentColor 18%, transparent); }
 .lift { transition: box-shadow 0.15s, border-color 0.15s, background-color 0.15s; }
 
 @media (prefers-reduced-motion: reduce) {

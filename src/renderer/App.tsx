@@ -175,7 +175,7 @@ export function App() {
     void window.relay.usage.get().then((l) => setUsage(Object.fromEntries(l.map((u) => [u.accountId, u]))))
     const full = (u?: AccountUsage) => !!u?.windows.some((w) => w.pct >= 100)
     const offUsage = window.relay.usage.onUpdate((u) => {
-      if (full(u) || full(usageRef.current[u.accountId])) void loadStatus(u.accountId, true)
+      if (full(u) !== full(usageRef.current[u.accountId])) void loadStatus(u.accountId, true) // only when it flips: no `auth status` spawn per update at 100%
       setUsage((m) => ({ ...m, [u.accountId]: u }))
     })
     const offWarn = window.relay.usage.onWarn((text) => toasts.push('warning', text))
@@ -388,7 +388,7 @@ export function App() {
   const hitAcc = hit && accounts.find((a) => a.id === hit.accountId)
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full overflow-hidden">
       <Sidebar
         accounts={accounts}
         statuses={statuses}
@@ -433,6 +433,7 @@ export function App() {
                 title={canHand ? 'Continuar esta sesión en otra cuenta' : 'Necesitas una sesión abierta y con transcripción'}
                 trigger={<>Continuar en otra cuenta <IconChevron open /></>}
                 btnClass="btn btn-sm btn-soft btn-primary"
+                tip="tooltip-left"
                 items={[
                   ...targets.map((a) => {
                     const s = statuses[a.id]

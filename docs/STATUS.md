@@ -15,7 +15,7 @@ App de escritorio (Electron + React + daisyUI + xterm + node-pty, con Bun) que e
 | Instalación del CLI | Si falta, se ofrece el instalador oficial, que se ejecuta visible tras confirmar. Relay no empaqueta ningún CLI. |
 | Memoria compartida | `~/.relay/shared` enlazado con symlinks: en las cuentas gestionadas por defecto, en las importadas solo con consentimiento. |
 | UI | daisyUI 5 con temas propios. Inspirada en apps de agentes, **sin imitar la marca** de Claude Code ni de OpenAI. |
-| Logo | **Cerebro de circuitos** en teal (`#5CC8D7`, nodos `#8BE3EC`) sobre azul marino (`#0F1B24`), con la palabra "RELAY" en `relay-logo.svg` (`assets/brand/`). Sustituye al diseño de tarjetas (`{•}`/`>_`), que queda archivado en `assets/brand/archive/`. El acento de la app pasa de ámbar a teal. Prohibido usar el destello de Claude o la nube de Codex. |
+| Logo | **Cerebro de circuitos** en teal (`#69C4CF`) sobre azul marino (`#1A262C`), con la palabra "RELAY" en `relay-logo.svg` (`assets/brand/`). Sustituye al diseño de tarjetas (`{•}`/`>_`), que queda archivado en `assets/brand/archive/`. El acento de la app pasa de ámbar a teal. Prohibido usar el destello de Claude o la nube de Codex. |
 | Consumo | Las cards muestran el % oficial de las ventanas **5h** y **7 días**, y su reinicio, tomados del JSON del status line del CLI (`rate_limits`). |
 | Historial | Los proyectos muestran **solo las sesiones creadas o usadas desde Relay**. Las sesiones antiguas se traen con "Abrir sesión existente…". |
 | Licencia y repo | MIT, `Copyright (c) 2026 Carlos Sánchez`. Repo público `CarlosDevSanchez/relay`, que se publica **al cerrar el MVP**. `main` protegida con PR y aprobación del dueño, sin push directo; el admin puede saltarla. |
@@ -43,19 +43,20 @@ App de escritorio (Electron + React + daisyUI + xterm + node-pty, con Bun) que e
 | `14427b9` | docs | LICENSE, AGENTS.md, CLAUDE.md (`@AGENTS.md`), README reescrito |
 | `1a87166` | F4.1 | UI daisyUI, Configuración como modal, login guiado, terminal con tema, auto-continuar, foco seguro en los diálogos |
 | `25b1e55` | F5 | Codex del mismo proveedor: cuentas, login, sesiones (solo hilos `codex-tui`), handoff, límite, `AGENTS.md` compartido; restos de F4.1 |
+| `63fb289` | F5.1 | Barras de consumo oficial (status line), historial solo de Relay, logo conectado |
 
 Estado al cierre de F5: 100 tests y e2e con 5 escenarios en verde; auditoría PASS.
 
 ## 5. En curso
-- **F5.1 · Consumo e historial + logo**: implementado, sin commit y pendiente de auditoría Opus.
-  - **Consumo:** `src/main/rates.ts` (script `<RELAY_HOME>/bin/statusline.sh` inyectado con `--settings`, tracker de uso con avisos), `src/shared/usage.ts`. Barras "Sesión 5h" y "Semana" en las cards, sección "Consumo" en Configuración, 100% = cuenta limitada, Codex vía `token_count.rate_limits` si existe (forma sin verificar).
-  - **Historial:** `src/main/registry.ts` (`sessions.json`), "Abrir sesión existente…" (`Adopt.tsx`) y "Quitar del historial de Relay". Sin migración: empieza vacío.
-  - **Restos de F5:** README y diálogo de cuenta nueva (Codex por defecto si es el único CLI instalado) hechos.
-  - **Logo conectado** (cerebro-circuito teal sobre navy): icono de ventana y Dock (`build/icon.png`), `relay-mark.svg` en el sidebar, `relay-logo.svg` en el onboarding, favicon, README. Acento de la app = teal (`primary` #5CC8D7 en oscuro, #0E7C8C en claro; neutros con tinte navy). `build/icon.iconset/` en `.gitignore`.
+- **F5.2 · Cards compactas y secciones plegables**: hecho y auditado (PASS). MINOR abierto: la línea corta del status line puede tomar un % ajeno si el CLI cambia el orden de las claves (solo afecta al texto del CLI, no a las cards).
+  - Card compacta por defecto (punto de estado, nombre, badges de plan y proveedor, dos barras finas 5h/7d con el % y el reinicio en tooltip); clic o chevron la expande (email, filas "Sesión 5h"/"Semana", tokens, notas de memoria compartida). Cuenta limitada o sobre el umbral: punto y barra en warning/error aunque esté compacta.
+  - "Cuentas" y "Proyectos" se pliegan (plegado de cuentas = un punto por cuenta con tooltip). Estado en `localStorage` (preferencia de UI, con try/catch). El e2e comprueba que ningún elemento del sidebar se sale de su caja (compacto, expandido, plegado y ventana mínima de 900 px).
+  - Restos de la auditoría F5.1: escrituras al registro best-effort, listado filtrado por el registro y títulos en caché (tamaño+mtime), `auth status` solo cuando cambia el estado 100%, el status line del usuario conserva `refreshInterval`/`padding` (se ejecuta con `/bin/sh`), un umbral cruzado con Relay cerrado no se avisa (a propósito), `chmod 0700` del dir de estado, ruta del icono empaquetado, `preview.png` a 1200 px, colores de marca teal `#69C4CF` / navy `#1A262C`.
   - Siguiente paso: auditoría Opus, correcciones, commit.
+  - Para la fase de empaquetado: el icono de la ventana empaquetada se busca en `process.resourcesPath/icon.png` (hay que copiarlo allí con `extraResources`); en desarrollo, `<proyecto>/build/icon.png`.
 
 ## 6. Pendiente para cerrar el MVP
-1. Commit de F5.1 (incluye la conexión del logo).
+1. F5.1 (`63fb289`) y F5.2 en commit.
 2. **Prueba manual del usuario** desde un worktree fijado al último commit. Puntos clave que solo se pueden comprobar con cuentas reales:
    - Claude: que `claude --resume <id> "<msg>"` continúe solo; que la memoria compartida funcione por symlink (`/memory`, `/skills`, auto-memory en `~/.relay/shared`); que el login guiado y el campo del código funcionen; que las barras de consumo aparezcan.
    - Codex: login interactivo, `codex login status` con sesión iniciada, texto real del 429 y del reinicio, `token_count.rate_limits` real.

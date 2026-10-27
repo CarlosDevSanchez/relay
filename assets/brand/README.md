@@ -5,7 +5,7 @@ owner-provided vector trace of the reference logo (`logo-v2.svg`, 13-path potrac
 dropped, the remaining subpaths are filled with `fill-rule="evenodd"` (ring holes stay open), and the shapes are kept
 byte-for-byte in the reference coordinate system (no smoothing). The brain and the RELAY wordmark are separate groups.
 Regenerate rasters with `node_modules/.bin/electron scripts/build-icons.mjs` (writes `build/icons/*`,
-`build/icon.iconset`, `build/icon.icns`, `build/icon.png`, `favicon.png`, `preview.png`).
+`build/icon.iconset`, `build/icon.icns`, `build/icon.png`, `favicon.png`, `preview.png`, 1200 px wide (about 0.8 MB): resize after regenerating with `sips --resampleWidth 1200`).
 
 | File | Use |
 |---|---|

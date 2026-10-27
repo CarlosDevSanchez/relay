@@ -16,7 +16,7 @@ import { providers } from './providers'
 import { type LimitInfo, scheduleAt, pickRebind, watchLimits, watchNewSession } from './limit'
 import { candidateDirs, canProbe, claudeProjectDir, dirProvider, isDefaultInstall } from './paths'
 import { loadPrefs, savePrefs } from './prefs'
-import { claudeSettingsArgs, statusEnv, trackUsage, writeStatusScript } from './rates'
+import { claudeSettingsArgs, readUserStatus, statusEnv, trackUsage, writeStatusScript } from './rates'
 import { adoptable, loadRegistry, register, registerHandoff, touchSession, forgetSession, updateRegistry, visibleSessions } from './registry'
 import { drifted, linkAccount, nextFlag, sharedDir, unlinkAccount } from './shared'
 import { listSessions } from './sessions'
@@ -61,13 +61,21 @@ function notify(title: string, onClick?: () => void, force = false): boolean {
   return true
 }
 
+/** Registry writes are best-effort: a read-only home must not orphan a pty, throw in a data callback or fail a handoff that worked. */
+const record = (fn: Parameters<typeof updateRegistry>[1]): void => {
+  try {
+    updateRegistry(HOME, fn)
+  } catch {
+    // history is a convenience
+  }
+}
 const touched = new Map<number, number>()
 const ptyData = (id: number, d: string): void => {
   send('pty:data', id, d)
   const sid = ptyInfo(id)?.sessionId
   if (sid && Date.now() - (touched.get(id) ?? 0) > 60_000) {
     touched.set(id, Date.now()) // history: "last active", at most once a minute per pty
-    updateRegistry(HOME, (l) => touchSession(l, sid))
+    record((l) => touchSession(l, sid))
   }
 }
 const ptyExit = (id: number, code: number): void => {
@@ -90,7 +98,7 @@ async function start(req: StartRequest, message?: string): Promise<StartResult> 
   let sid = sessionId
   // official usage: Relay's status line script through `--settings` (user settings files are only read, to chain their own status line)
   const statusLine = a.provider === 'claude' && mode !== 'login' && statusScript !== '' && loadPrefs(HOME).usage.statusLine
-  const extra = statusLine ? claudeSettingsArgs(statusScript) : []
+  const extra = statusLine ? claudeSettingsArgs(statusScript, readUserStatus(a.configDir)) : []
   let args: string[] = p.loginArgs
   let dir = cwd
   if (mode === 'new') {
@@ -114,7 +122,7 @@ async function start(req: StartRequest, message?: string): Promise<StartResult> 
     ptyExit
   )
   const ref = (id: string) => ({ provider: a.provider, accountId: a.id, sessionId: id, cwd: dir })
-  if (mode !== 'login' && sid) updateRegistry(HOME, (l) => register(l, ref(sid!), mode === 'new' ? 'new' : 'resume'))
+  if (mode !== 'login' && sid) record((l) => register(l, ref(sid!), mode === 'new' ? 'new' : 'resume'))
   // live quota detection: tail the session transcript from its current end; follow /clear (new session id).
   // Codex new sessions have no id yet: the first new rollout of this cwd binds the tab (setPtySession + 'pty:session').
   if (mode !== 'login') {
@@ -142,7 +150,7 @@ async function start(req: StartRequest, message?: string): Promise<StartResult> 
         cur = d.id
         t = tail(d.id)
         setPtySession(ptyId, d.id)
-        updateRegistry(HOME, (l) => register(l, ref(d.id), 'new')) // Codex: first bind of a new session; Claude: /clear
+        record((l) => register(l, ref(d.id), 'new')) // Codex: first bind of a new session; Claude: /clear
         send('pty:session', ptyId, d.id)
       }
     }
@@ -249,7 +257,12 @@ function handle(): void {
     }
     return all
   })
-  ipcMain.handle('sessions:list', (_e, cwd: string) => (loadProjects(HOME).includes(cwd) ? visibleSessions(loadRegistry(HOME), listSessions(loadAccounts(HOME), cwd), cwd) : []))
+  ipcMain.handle('sessions:list', (_e, cwd: string) => {
+    if (!loadProjects(HOME).includes(cwd)) return []
+    const reg = loadRegistry(HOME)
+    const ids = new Set(reg.filter((e) => e.cwd === cwd).map((e) => e.sessionId)) // only registered transcripts are read
+    return ids.size ? visibleSessions(reg, listSessions(loadAccounts(HOME), cwd, ids), cwd) : []
+  })
   ipcMain.handle('history:candidates', (_e, cwd: string) => (loadProjects(HOME).includes(cwd) ? adoptable(loadRegistry(HOME), listSessions(loadAccounts(HOME), cwd), cwd) : []))
   ipcMain.handle('history:adopt', (_e, cwd: unknown, sessionId: unknown) => {
     const r = checkSessionRef(cwd, sessionId, loadProjects(HOME))
@@ -324,7 +337,7 @@ function handle(): void {
       },
       () => start({ accountId: to.id, cwd: req.cwd, mode: 'resume', sessionId: req.sessionId }, message)
     ).then((r) => {
-      updateRegistry(HOME, (l) => registerHandoff(l, { provider: to.provider, accountId: to.id, sessionId: req.sessionId, cwd: req.cwd }, from.id))
+      record((l) => registerHandoff(l, { provider: to.provider, accountId: to.id, sessionId: req.sessionId, cwd: req.cwd }, from.id))
       return message ? { ...r, autoContinued: true } : r
     })
   })
@@ -338,13 +351,17 @@ app.whenReady().then(() => {
     // read-only home: sessions still start, just without the status line (no usage bars)
   }
   handle()
-  const icon = join(__dirname, '../../build/icon.png')
-  if (process.platform === 'darwin' && !app.isPackaged && existsSync(icon)) app.dock?.setIcon(icon) // dev only: a packaged app carries its .icns
+  // packaged: icon.png next to the app resources; dev: <project>/build/icon.png (app.getAppPath is the project root, not the bundle dir)
+  const iconFile = app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(app.getAppPath(), 'build/icon.png')
+  const icon = existsSync(iconFile) ? iconFile : undefined
+  if (process.platform === 'darwin' && !app.isPackaged && icon) app.dock?.setIcon(icon) // dev only: a packaged app carries its .icns
   win = new BrowserWindow({
-    icon,
+    ...(icon ? { icon } : {}),
     width: 1280,
+    minWidth: 900,
+    minHeight: 560,
     height: 800,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1917' : '#faf8f5',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1a262c' : '#f4f7f8',
     titleBarStyle: 'hiddenInset',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

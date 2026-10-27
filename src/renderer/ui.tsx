@@ -19,12 +19,12 @@ export const IconFolder = () => <Svg d="M2 4.5A1.5 1.5 0 013.5 3H6l1.5 1.5h5A1.5
 
 // ---- logo: relay-mark.svg inlined so it follows `currentColor` (brand teal via text-primary); `full` = relay-logo.svg with the wordmark (fixed teal, on a navy chip so it reads in the light theme) ----
 export const Logo = ({ size = 20, full = false }: { size?: number; full?: boolean }) => (
-  <span data-testid="logo" aria-hidden="true" className={`inline-flex shrink-0 [&>svg]:h-full [&>svg]:w-auto ${full ? 'rounded-box bg-[#0d1b26] p-2' : 'text-primary'}`} style={{ height: size }} dangerouslySetInnerHTML={{ __html: full ? logoSvg : markSvg }} />
+  <span data-testid="logo" aria-hidden="true" className={`inline-flex shrink-0 [&>svg]:h-full [&>svg]:w-auto ${full ? 'rounded-box bg-[#1a262c] p-2' : 'text-primary'}`} style={{ height: size }} dangerouslySetInnerHTML={{ __html: full ? logoSvg : markSvg }} />
 )
 
 // ---- status dot (daisyUI `status`) ----
-export const Dot = ({ tone }: { tone: 'ok' | 'warn' | 'off' }) => (
-  <span aria-hidden="true" className={`status shrink-0 ${tone === 'ok' ? 'status-success' : tone === 'warn' ? 'status-warning' : 'status-neutral'}`} />
+export const Dot = ({ tone }: { tone: 'ok' | 'warn' | 'err' | 'off' }) => (
+  <span aria-hidden="true" className={`status shrink-0 ${tone === 'ok' ? 'status-success' : tone === 'warn' ? 'status-warning' : tone === 'err' ? 'status-error' : 'status-neutral'}`} />
 )
 
 // ---- dropdown menu (daisyUI `dropdown`, focus based: closes on blur) ----
@@ -35,15 +35,15 @@ export interface MenuItem {
   title?: string
   danger?: boolean
 }
-export function Dropdown({ trigger, items, title, align = 'right', btnClass = 'btn btn-sm btn-ghost' }: { trigger: ReactNode; items: MenuItem[]; title?: string; align?: 'left' | 'right'; btnClass?: string }) {
+export function Dropdown({ trigger, items, title, align = 'right', btnClass = 'btn btn-sm btn-ghost', tip = 'tooltip-bottom', menuClass = 'w-60' }: { trigger: ReactNode; items: MenuItem[]; title?: string; align?: 'left' | 'right'; btnClass?: string; tip?: string; menuClass?: string }) {
   return (
     <div className={`dropdown nodrag ${align === 'right' ? 'dropdown-end' : ''}`}>
-      <div className="tooltip tooltip-bottom" data-tip={title}>
+      <div className={`tooltip ${tip}`} data-tip={title}>
         <div tabIndex={0} role="button" aria-haspopup="menu" aria-label={title} className={`${btnClass} gap-1`}>
           {trigger}
         </div>
       </div>
-      <ul tabIndex={0} role="menu" className="dropdown-content menu z-30 mt-1 w-60 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg">
+      <ul tabIndex={0} role="menu" className={`dropdown-content menu z-30 mt-1 max-w-[calc(100vw-1rem)] ${menuClass} rounded-box border border-base-300 bg-base-100 p-1 shadow-lg`}>
         {items.length === 0 && <li className="menu-disabled"><span>Sin opciones</span></li>}
         {items.map((it) => (
           <li key={it.label} className={it.disabled ? 'menu-disabled' : ''}>

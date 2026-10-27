@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -87,6 +87,25 @@ describe('sessions', () => {
     utimesSync(join(d2, `${SID}.jsonl`), 300, 300)
     expect(listSessions([a!, b!], cwd).map((s) => [s.id === SID, s.accountId])).toEqual([[true, 'a1'], [false, 'a1']])
     expect(listSessions([a!], '/nope')).toEqual([])
+  })
+  it('reads only the requested ids and keeps titles of unchanged files', () => {
+    const cwd = '/work/cache'
+    const acc = { id: 'c0', label: 'C', provider: 'claude' as const, configDir: tmp() }
+    const d = claudeProjectDir(acc.configDir, cwd)
+    mkdirSync(d, { recursive: true })
+    const other = 'eeeeeeee-2222-3333-4444-555555555555'
+    const mine = join(d, `${SID}.jsonl`)
+    writeFileSync(mine, fixture)
+    writeFileSync(join(d, `${other}.jsonl`), fixture)
+    utimesSync(mine, 1000, 1000) // integer seconds: no sub-ms rounding between the two stats
+    expect(listSessions([acc], cwd, new Set([SID])).map((s) => s.id)).toEqual([SID])
+    expect(listSessions([acc], cwd, new Set()).length).toBe(0)
+    // same size + mtime: the cached title is served even if the content changed underneath
+    writeFileSync(mine, fixture.replace('login bug', 'login bxx'))
+    utimesSync(mine, 1000, 1000)
+    expect(listSessions([acc], cwd, new Set([SID]))[0]?.title).toBe('fix the login bug')
+    writeFileSync(mine, fixture.replace('fix the   login bug', 'another title!!'))
+    expect(listSessions([acc], cwd, new Set([SID]))[0]?.title).toBe('another title!!')
   })
 })
 

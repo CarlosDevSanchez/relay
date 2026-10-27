@@ -5,9 +5,14 @@ interface Entry {
   proc: pty.IPty
   accountId: string
   sessionId: string | undefined
+  cwd: string
+  /** the CLI changed session id and Relay could not tell which one: handoff is refused */
+  stale: boolean
   exited: Promise<void>
 }
 const ptys = new Map<number, Entry>()
+/** every session id any Relay pty has ever had (incl. handoff targets): never a rebind candidate */
+const everBound = new Set<string>()
 let nextId = 1
 
 export function spawnPty(
@@ -30,7 +35,8 @@ export function spawnPty(
       res()
     })
   )
-  ptys.set(id, { proc, accountId, sessionId, exited })
+  if (sessionId) everBound.add(sessionId)
+  ptys.set(id, { proc, accountId, sessionId, cwd, stale: false, exited })
   return id
 }
 
@@ -48,7 +54,18 @@ export const killAccountPtys = (accountId: string): Promise<void[]> =>
   Promise.all([...ptys].filter(([, e]) => e.accountId === accountId).map(([id]) => killPty(id)))
 
 /** Owner account + session of a live pty (undefined once exited). */
-export const ptyInfo = (id: number): { accountId: string; sessionId: string | undefined } | undefined => {
+export const ptyInfo = (id: number): { accountId: string; sessionId: string | undefined; stale: boolean } | undefined => {
   const e = ptys.get(id)
-  return e && { accountId: e.accountId, sessionId: e.sessionId }
+  return e && { accountId: e.accountId, sessionId: e.sessionId, stale: e.stale }
 }
+
+export function setPtySession(id: number, sessionId: string): void {
+  const e = ptys.get(id)
+  if (!e) return
+  e.sessionId = sessionId
+  everBound.add(sessionId)
+}
+export const markStale = (id: number): void => void (ptys.get(id) && (ptys.get(id)!.stale = true))
+export const wasBound = (sessionId: string): boolean => everBound.has(sessionId)
+/** Live Relay ptys on this account + project dir. */
+export const livePtyCount = (accountId: string, cwd: string): number => [...ptys.values()].filter((e) => e.accountId === accountId && e.cwd === cwd).length

@@ -89,4 +89,10 @@ export interface RelayApi {
   remindReset(accountId: string, resetAt: number): Promise<void>
   onLimit(cb: (hit: LimitHit) => void): () => void
   onFocusTab(cb: (ptyId: number) => void): () => void
+  /** the CLI started a new session id in this pty (/clear): handoff must use it */
+  onSession(cb: (ptyId: number, sessionId: string) => void): () => void
+  /** the session id changed in the CLI and Relay could not tell which: handoff is refused for this pty */
+  onStale(cb: (ptyId: number) => void): () => void
+  /** a wait-for-reset reminder fired */
+  onReminder(cb: (accountId: string) => void): () => void
 }

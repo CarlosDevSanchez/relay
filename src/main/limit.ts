@@ -1,4 +1,6 @@
-import { closeSync, openSync, readSync, statSync, watch, type FSWatcher } from 'node:fs'
+import { closeSync, openSync, readSync, readdirSync, statSync, watch, type FSWatcher } from 'node:fs'
+import { join } from 'node:path'
+import { isSessionId } from './validate'
 
 const LIMIT_RE = /hit your (\w+) limit · resets (.+)/
 const RESET_RE = /^(?:([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)\s*$/i
@@ -110,14 +112,18 @@ export function tailFile(file: string, onLines: (lines: string[]) => void): { ch
       pending = Buffer.alloc(0)
     }
     if (n === off) return
-    const chunk = Buffer.alloc(n - off)
-    const fd = openSync(file, 'r')
+    let chunk = Buffer.alloc(n - off)
     try {
-      readSync(fd, chunk, 0, chunk.length, off)
-    } finally {
-      closeSync(fd)
+      const fd = openSync(file, 'r')
+      try {
+        chunk = chunk.subarray(0, readSync(fd, chunk, 0, chunk.length, off))
+      } finally {
+        closeSync(fd)
+      }
+    } catch {
+      return // vanished or unreadable: retry on the next tick
     }
-    off = n
+    off += chunk.length
     const buf = Buffer.concat([pending, chunk])
     const end = buf.lastIndexOf(10)
     pending = buf.subarray(end + 1)
@@ -134,18 +140,63 @@ export function tailFile(file: string, onLines: (lines: string[]) => void): { ch
   }
 }
 
-/** Calls `onHit` for each new rate_limit line (repeats with the same reset text are collapsed). */
-export function watchLimits(file: string, onHit: (h: LimitInfo) => void): { check(): void; stop(): void } {
-  let last = ''
+/**
+ * Calls `onHit` for each new rate_limit line. A repeat of the same limit is collapsed: same resetAt,
+ * or (reset unparsed) same text within 5 minutes.
+ */
+export function watchLimits(file: string, onHit: (h: LimitInfo) => void, now = Date.now): { check(): void; stop(): void } {
+  let last: { key: string; at: number } | undefined
   return tailFile(file, (lines) => {
     for (const l of lines) {
       const h = parseLimitLine(l)
-      if (h && h.resetText !== last) {
-        last = h.resetText
-        onHit(h)
-      }
+      if (!h) continue
+      const key = h.resetAt !== null ? String(h.resetAt) : h.resetText
+      if (last?.key === key && (h.resetAt !== null || now() - last.at < 300_000)) continue
+      last = { key, at: now() }
+      onHit(h)
     }
   })
+}
+
+/**
+ * /clear or an in-CLI new session changes the CLI's session id. Reports transcripts in `dir` whose NAME is new since
+ * the watcher started (existing names are remembered, so only new names are stat'ed), were born after `since`
+ * and that `skip` does not claim. It only reports candidates; `pickRebind` decides what to do with them.
+ */
+export function watchNewSession(dir: string, since: number, skip: (id: string) => boolean, onNew: (ids: string[]) => void): { check(): void; stop(): void } {
+  const seen = new Set<string>()
+  const list = (): string[] => {
+    try {
+      return readdirSync(dir)
+    } catch {
+      return []
+    }
+  }
+  for (const f of list()) seen.add(f)
+  const check = (): void => {
+    const fresh: string[] = []
+    for (const f of list()) {
+      if (seen.has(f)) continue
+      seen.add(f)
+      const id = f.slice(0, -6)
+      if (!f.endsWith('.jsonl') || !isSessionId(id) || skip(id)) continue
+      try {
+        if (statSync(join(dir, f)).birthtimeMs >= since) fresh.push(id)
+      } catch {
+        // vanished
+      }
+    }
+    if (fresh.length) onNew(fresh)
+  }
+  const t = setInterval(check, 1000)
+  t.unref()
+  return { check, stop: () => clearInterval(t) }
+}
+
+/** Rebind only when the tab is the sole live Relay pty for its account+cwd and exactly one candidate exists; otherwise the session is stale. */
+export function pickRebind(candidates: string[], livePtys: number): { id: string } | 'stale' | null {
+  if (!candidates.length) return null
+  return candidates.length === 1 && livePtys === 1 ? { id: candidates[0]! } : 'stale'
 }
 
 /** Runs `fn` at `resetAt` (ignored when past or beyond setTimeout's range). Returns a canceller. */

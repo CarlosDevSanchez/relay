@@ -3,13 +3,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { buildEnv } from '../src/main/env'
-import { parseLimitLine, parseLimitText, parseResetAt, scheduleAt, tailFile, watchLimits } from '../src/main/limit'
+import { pickRebind, watchNewSession, parseLimitLine, parseLimitText, parseResetAt, scheduleAt, tailFile, watchLimits } from '../src/main/limit'
 import { loadPrefs, savePrefs } from '../src/main/prefs'
 import { copySessionForHandoff, runHandoff, terminate } from '../src/main/handoff'
 import { claudeProjectDir, encodeCwd } from '../src/main/paths'
 import { listSessions, sessionTitle } from '../src/main/sessions'
-import { checkAccountId, checkHandoff, checkNewAccount, checkRename, checkStart } from '../src/main/validate'
-import { addAccount, addProject, loadAccounts, loadCopies, loadProjects, recordCopy, removeAccount, renameAccount } from '../src/main/store'
+import { checkReminder, checkAccountId, checkHandoff, checkNewAccount, checkRename, checkStart } from '../src/main/validate'
+import { addAccount, addProject, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount } from '../src/main/store'
 import { parseAuthStatus, scanUsage } from '../src/main/usage'
 
 const tmp = () => realpathSync(mkdtempSync(join(tmpdir(), 'relay-')))
@@ -458,5 +458,92 @@ describe('import under managed accounts (realpath)', () => {
     expect(() => checkNewAccount('l', 'claude', link, h)).toThrow(/managed/)
     expect(() => checkNewAccount('l', 'claude', join(h, 'accounts', 'new'), h)).toThrow(/managed/)
     expect(() => checkNewAccount('l', 'claude', tmp(), h)).not.toThrow()
+  })
+})
+
+describe('F2 audit follow-ups', () => {
+  const lim = (reset: string) => JSON.stringify({ type: 'assistant', timestamp: '2026-10-09T04:17:00Z', isApiErrorMessage: true, error: 'rate_limit', message: { content: [{ text: `You've hit your session limit · resets ${reset}` }] } }) + '\n'
+  it('tail survives an unreadable file and retries without losing lines', () => {
+    const f = join(tmp(), 'u.jsonl')
+    writeFileSync(f, '')
+    const got: string[] = []
+    const t = tailFile(f, (l) => got.push(...l))
+    appendFileSync(f, 'a\n')
+    chmodSync(f, 0)
+    expect(() => t.check()).not.toThrow()
+    chmodSync(f, 0o600)
+    t.check()
+    expect(got).toEqual(['a'])
+    t.stop()
+  })
+  it('collapses repeats by resetAt (any text), or by text within 5 minutes when unparsed', () => {
+    const f = join(tmp(), 'c.jsonl')
+    writeFileSync(f, '')
+    let now = 0
+    const hits: string[] = []
+    const w = watchLimits(f, (h) => hits.push(h.resetText), () => now)
+    appendFileSync(f, lim('1:10am (UTC)') + lim('1:10am  (UTC)'))
+    w.check()
+    expect(hits).toEqual(['1:10am (UTC)']) // same resetAt
+    now = 10 * 3600_000 // hours later: still the same resetAt -> same limit
+    appendFileSync(f, lim('1:10am (UTC)'))
+    w.check()
+    expect(hits.length).toBe(1)
+    appendFileSync(f, lim('weird text') + lim('weird text'))
+    w.check()
+    expect(hits.length).toBe(2)
+    now += 6 * 60_000
+    appendFileSync(f, lim('weird text'))
+    w.check()
+    expect(hits.length).toBe(3) // unparsed: collapsed only within a short window
+    w.stop()
+  })
+  it('watchNewSession reports only new, born-after, unclaimed names and stats each name once', () => {
+    const d = tmp()
+    const [OLD, OTHER, FRESH, FRESH2] = ['a', 'b', 'c', 'd'].map((c) => `${c.repeat(8)}-2222-3333-4444-555555555555`) as [string, string, string, string]
+    writeFileSync(join(d, `${OLD}.jsonl`), 'x\n') // existing before the watcher: remembered, never reported
+    const found: string[][] = []
+    const w = watchNewSession(d, Date.now() - 1000, (id) => id === SID || id === OTHER, (ids) => found.push(ids))
+    w.check()
+    expect(found).toEqual([])
+    for (const id of [SID, OTHER, FRESH]) writeFileSync(join(d, `${id}.jsonl`), 'x\n')
+    writeFileSync(join(d, 'not-a-session.jsonl'), 'x')
+    w.check()
+    expect(found).toEqual([[FRESH]])
+    w.check() // nothing new: names already seen are not looked at again
+    expect(found).toEqual([[FRESH]])
+    writeFileSync(join(d, `${FRESH2}.jsonl`), 'x\n')
+    w.check()
+    expect(found).toEqual([[FRESH], [FRESH2]])
+    expect(() => watchNewSession(join(d, 'missing'), 0, () => false, () => undefined).check()).not.toThrow()
+    const late = watchNewSession(d, Date.now() + 60_000, () => false, (ids) => found.push(ids)) // born before `since`
+    writeFileSync(join(d, `${'e'.repeat(8)}-2222-3333-4444-555555555555.jsonl`), 'x\n')
+    late.check()
+    expect(found.length).toBe(2)
+    w.stop()
+    late.stop()
+  })
+  it('pickRebind: only a single candidate on the sole live pty rebinds, anything ambiguous is stale', () => {
+    expect(pickRebind([], 1)).toBeNull()
+    expect(pickRebind(['x'], 1)).toEqual({ id: 'x' })
+    expect(pickRebind(['x'], 2)).toBe('stale') // another live tab on the same account+project
+    expect(pickRebind(['x', 'y'], 1)).toBe('stale')
+  })
+  it('validates reminder times', () => {
+    expect(checkReminder(2000, 1000)).toBe(2000)
+    for (const bad of [1000, 500, NaN, Infinity, '5', null, 1000 + 9 * 86400_000]) expect(() => checkReminder(bad, 1000)).toThrow(/resetAt/)
+  })
+  it('prunes copy records of removed accounts and missing transcripts', () => {
+    const home = tmp()
+    const a = addAccount(home, 'a', 'claude', tmp())
+    const keep = SID
+    const gone = 'ffffffff-2222-3333-4444-555555555555'
+    mkdirSync(join(a.configDir, 'projects', 'p'), { recursive: true })
+    writeFileSync(join(a.configDir, 'projects', 'p', `${keep}.jsonl`), 'x\n')
+    for (const id of [keep, gone]) recordCopy(home, a.id, id, { from: 0, to: 1, replaced: false, sib: [] })
+    recordCopy(home, 'ghost', keep, { from: 0, to: 1, replaced: false, sib: [] })
+    pruneCopies(home)
+    expect(Object.keys(loadCopies(home))).toEqual([a.id])
+    expect(Object.keys(loadCopies(home)[a.id]!)).toEqual([keep])
   })
 })

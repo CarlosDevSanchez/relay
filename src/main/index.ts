@@ -5,15 +5,15 @@ import { BrowserWindow, Notification, app, dialog, ipcMain } from 'electron'
 import type { Account, HandoffRequest, StartRequest, StartResult } from '../shared/types'
 import { buildEnv } from './env'
 import { copySessionForHandoff, runHandoff, sourceExists } from './handoff'
-import { killAccountPtys, killAll, killPty, ptyInfo, resizePty, spawnPty, writePty } from './pty'
+import { killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty } from './pty'
 import { providers } from './providers'
-import { type LimitInfo, scheduleAt, watchLimits } from './limit'
+import { type LimitInfo, scheduleAt, pickRebind, watchLimits, watchNewSession } from './limit'
 import { claudeProjectDir } from './paths'
 import { loadPrefs, savePrefs } from './prefs'
 import { listSessions } from './sessions'
 import { accountStatus } from './usage'
-import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, recordCopy, removeAccount, renameAccount } from './store'
-import { checkAccountId, checkHandoff, checkNewAccount, checkRename, checkStart } from './validate'
+import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount } from './store'
+import { checkAccountId, checkHandoff, checkNewAccount, checkReminder, checkRename, checkStart } from './validate'
 
 const HOME = join(homedir(), '.relay')
 let win: BrowserWindow
@@ -27,16 +27,21 @@ const send = (ch: string, ...a: unknown[]): void => {
 const watchers = new Map<number, { stop(): void }>()
 const reminders = new Map<string, () => void>()
 
+const live = new Set<Notification>() // keep a reference until click/close, or GC may drop the click
+
 function notify(title: string, onClick?: () => void): void {
   const prefs = loadPrefs(HOME).notifications
   if (!prefs.system || !Notification.isSupported()) return
   const n = new Notification({ title, silent: !prefs.sound })
+  live.add(n)
+  setTimeout(() => live.delete(n), 10 * 60_000).unref() // macOS may never fire close
   n.on('click', () => {
     if (win.isDestroyed()) return
     win.show()
     win.focus()
     onClick?.()
   })
+  for (const ev of ['click', 'close', 'failed'] as const) n.on(ev as 'click', () => live.delete(n))
   n.show()
 }
 
@@ -76,10 +81,35 @@ async function start(req: StartRequest): Promise<StartResult> {
       send('pty:exit', id, code)
     }
   )
-  // live quota detection: tail this session's transcript from its current end
+  // live quota detection: tail the session transcript from its current end; follow /clear (new session id)
   if (sid && a.provider === 'claude') {
-    const w = watchLimits(join(claudeProjectDir(a.configDir, dir), `${sid}.jsonl`), (h) => onLimit(ptyId, a, sid, h))
-    watchers.set(ptyId, w)
+    const projDir = claudeProjectDir(a.configDir, dir)
+    const tail = (id: string) => watchLimits(join(projDir, `${id}.jsonl`), (h) => onLimit(ptyId, a, id, h))
+    let cur = sid
+    let t = tail(cur)
+    const cands = new Set<string>()
+    let timer: NodeJS.Timeout | undefined
+    const decide = (): void => {
+      timer = undefined
+      const d = pickRebind([...cands].filter((id) => !wasBound(id)), livePtyCount(a.id, dir))
+      cands.clear()
+      if (d === 'stale') {
+        markStale(ptyId) // keep limit detection on the old file; handoff is refused for this tab
+        nw.stop()
+        send('pty:stale', ptyId)
+      } else if (d) {
+        t.stop()
+        cur = d.id
+        t = tail(d.id)
+        setPtySession(ptyId, d.id)
+        send('pty:session', ptyId, d.id)
+      }
+    }
+    const nw = watchNewSession(projDir, Date.now(), (id) => id === cur || wasBound(id), (ids) => {
+      ids.forEach((i) => cands.add(i))
+      timer ??= setTimeout(decide, 1500) // let a second candidate show up before deciding
+    })
+    watchers.set(ptyId, { stop: () => (t.stop(), nw.stop(), clearTimeout(timer)) })
   }
   return { ptyId, ...(sid ? { sessionId: sid } : {}) }
 }
@@ -102,7 +132,10 @@ function handle(): void {
   })
   ipcMain.handle('accounts:remove', async (_e, id: string) => {
     checkAccountId(id, loadAccounts(HOME))
+    reminders.get(id)?.()
+    reminders.delete(id)
     await removeAccount(HOME, id, () => killAccountPtys(id))
+    pruneCopies(HOME)
     return list()
   })
   ipcMain.handle('accounts:status', (_e, id: string, refresh?: boolean) => {
@@ -123,9 +156,16 @@ function handle(): void {
   ipcMain.handle('prefs:set', (_e, patch) => savePrefs(HOME, patch))
   ipcMain.handle('limit:remind', (_e, accountId: string, resetAt: number) => {
     const a = checkAccountId(accountId, loadAccounts(HOME))
-    if (typeof resetAt !== 'number') throw new Error('Invalid resetAt')
+    checkReminder(resetAt)
     reminders.get(a.id)?.()
-    reminders.set(a.id, scheduleAt(resetAt, () => notify(`${a.label} ya tiene cuota disponible`)))
+    reminders.set(
+      a.id,
+      scheduleAt(resetAt, () => {
+        reminders.delete(a.id)
+        send('limit:reminder', a.id) // always shown in-app; the system notification follows prefs
+        notify(`${a.label} ya tiene cuota disponible`)
+      })
+    )
   })
   ipcMain.handle('pty:kill', (_e, id: number) => killPty(id))
   ipcMain.on('pty:write', (_e, id: number, d: string) => writePty(id, d))
@@ -133,6 +173,7 @@ function handle(): void {
   ipcMain.handle('handoff', (_e, req: HandoffRequest) => {
     const [from, to] = checkHandoff(req, loadAccounts(HOME), loadProjects(HOME))
     const owner = ptyInfo(req.ptyId) // undefined = already exited (killing it is a no-op)
+    if (owner?.stale) throw new Error('Sesión cambiada dentro del CLI; vuelve a abrirla desde el sidebar para poder continuarla en otra cuenta')
     if (owner && (owner.accountId !== from.id || owner.sessionId !== req.sessionId)) throw new Error('pty does not belong to the source account and session')
     if (!sourceExists(from, req.cwd, req.sessionId)) throw new Error('Session has no transcript yet (send a first message before switching)')
     return runHandoff(
@@ -147,6 +188,7 @@ function handle(): void {
 }
 
 app.whenReady().then(() => {
+  pruneCopies(HOME)
   handle()
   win = new BrowserWindow({
     width: 1280,

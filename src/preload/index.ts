@@ -30,7 +30,10 @@ const api: RelayApi = {
   prefs: { get: () => ipcRenderer.invoke('prefs:get'), set: (p) => ipcRenderer.invoke('prefs:set', p) },
   remindReset: (accountId, resetAt) => ipcRenderer.invoke('limit:remind', accountId, resetAt),
   onLimit: (cb) => sub('limit:hit', cb),
-  onFocusTab: (cb) => sub('tab:focus', cb)
+  onFocusTab: (cb) => sub('tab:focus', cb),
+  onStale: (cb) => sub('pty:stale', cb),
+  onSession: (cb) => sub('pty:session', cb),
+  onReminder: (cb) => sub('limit:reminder', cb)
 }
 
 contextBridge.exposeInMainWorld('relay', api)

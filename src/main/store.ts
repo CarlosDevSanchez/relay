@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { Account, ProviderId } from '../shared/types'
 import type { CopyResult } from './handoff'
@@ -86,4 +86,22 @@ export function recordCopy(home: string, accountId: string, sessionId: string, r
     sib: [...new Set([...(old?.sib ?? []), ...r.sib])]
   }
   writeJson(join(home, 'copies.json'), { ...all, [accountId]: { ...all[accountId], [sessionId]: rec } })
+}
+
+/** Drops copy records of removed accounts and of transcripts that no longer exist. */
+export function pruneCopies(home: string): void {
+  const all = loadCopies(home)
+  const out: typeof all = {}
+  for (const a of loadAccounts(home)) {
+    const proj = join(a.configDir, 'projects')
+    let dirs: string[] = []
+    try {
+      dirs = readdirSync(proj)
+    } catch {
+      // no projects dir: every record is stale
+    }
+    const kept = Object.entries(all[a.id] ?? {}).filter(([sid]) => dirs.some((d) => existsSync(join(proj, d, `${sid}.jsonl`))))
+    if (kept.length) out[a.id] = Object.fromEntries(kept)
+  }
+  if (JSON.stringify(out) !== JSON.stringify(all)) writeJson(join(home, 'copies.json'), out)
 }

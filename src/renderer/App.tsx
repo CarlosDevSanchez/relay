@@ -9,12 +9,16 @@ const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `
 interface Tab {
   ptyId: number
   accountId: string
+  cwd: string
   title: string
   sessionId?: string
   login?: boolean
   exited?: boolean
   hint?: string
+  /** session id changed inside the CLI and could not be tied to this tab: no handoff */
+  stale?: boolean
 }
+const STALE = 'Sesión cambiada dentro del CLI; vuelve a abrirla desde el sidebar para poder continuarla en otra cuenta'
 
 export function App() {
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -26,19 +30,27 @@ export function App() {
   const [tabs, setTabs] = useState<Tab[]>([])
   const [cur, setCur] = useState<number | null>(null) // active tab ptyId
   const [error, setError] = useState('')
-  const [hit, setHit] = useState<LimitHit | null>(null)
+  const [hits, setHits] = useState<LimitHit[]>([]) // queue, one per pty
+  const [modalError, setModalError] = useState('')
+  const [notices, setNotices] = useState<string[]>([])
+  const hit = hits[0]
+  const hitTab = hit && tabs.find((x) => x.ptyId === hit.ptyId)
+  const dropHit = (ptyId?: number) => {
+    setModalError('')
+    setHits((hs) => (ptyId === undefined ? hs.slice(1) : hs.filter((h) => h.ptyId !== ptyId)))
+  }
   const tab = tabs.find((t) => t.ptyId === cur)
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
   const accountsRef = useRef(accounts)
   accountsRef.current = accounts
 
-  const run = async (fn: () => Promise<unknown>) => {
-    setError('')
+  const run = async (fn: () => Promise<unknown>, sink: (m: string) => void = setError) => {
+    sink('')
     try {
       await fn()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      sink(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -73,6 +85,7 @@ export function App() {
     () =>
       window.relay.pty.onExit((id) => {
         setTabs((ts) => ts.map((t) => (t.ptyId === id ? { ...t, exited: true } : t)))
+        setHits((hs) => hs.filter((h) => h.ptyId !== id))
         const t = tabsRef.current.find((x) => x.ptyId === id)
         if (t?.login) void loadStatus(t.accountId, true)
       }),
@@ -82,11 +95,28 @@ export function App() {
   // quota hit on a live session: ask the user (never switch by itself)
   useEffect(() => {
     const offHit = window.relay.onLimit((h) => {
-      setHit(h)
+      setHits((hs) => [...hs.filter((x) => x.ptyId !== h.ptyId), h])
       accountsRef.current.forEach((a) => void loadStatus(a.id, true))
     })
-    const offFocus = window.relay.onFocusTab((id) => setCur(id))
-    return () => (offHit(), offFocus())
+    const offFocus = window.relay.onFocusTab((id) => {
+      if (tabsRef.current.some((t) => t.ptyId === id)) setCur(id)
+    })
+    const offStale = window.relay.onStale((id) => setTabs((ts) => ts.map((t) => (t.ptyId === id ? { ...t, stale: true, hint: STALE } : t))))
+    const offSession = window.relay.onSession((id, sessionId) => {
+      const t = tabsRef.current.find((x) => x.ptyId === id)
+      setTabs((ts) => ts.map((x) => (x.ptyId === id ? { ...x, sessionId, hint: 'Sesión cambiada dentro del CLI.' } : x)))
+      // the title is only known once the new transcript has a first prompt
+      if (t) setTimeout(() => void window.relay.sessions(t.cwd).then((l) => {
+        const title = (l.find((x) => x.id === sessionId)?.title ?? '(nueva sesión)').slice(0, 24)
+        setTabs((ts) => ts.map((x) => (x.ptyId === id && x.sessionId === sessionId ? { ...x, title, hint: `Sesión cambiada a ${title}` } : x)))
+      }), 3000)
+    })
+    const offRem = window.relay.onReminder((id) => {
+      const label = accountsRef.current.find((a) => a.id === id)?.label ?? id
+      setNotices((n) => [...n, `${label} ya tiene cuota disponible`])
+      void loadStatus(id, true)
+    })
+    return () => (offHit(), offFocus(), offStale(), offSession(), offRem())
   }, [loadStatus])
 
   const open = (t: Tab, replace?: number) => {
@@ -103,6 +133,7 @@ export function App() {
       open({
         ptyId: r.ptyId,
         accountId,
+        cwd: cwd ?? '',
         ...(r.sessionId ? { sessionId: r.sessionId } : {}),
         ...(mode === 'login' ? { login: true } : {}),
         title: mode === 'login' ? `login · ${label}` : (s?.title ?? 'new session').slice(0, 24)
@@ -147,25 +178,27 @@ export function App() {
     })
 
   // `ask`: the chip click needs a confirm(); the limit modal button is itself the confirmation
-  const handoff = (to: Account, t: Tab | undefined = tab, ask = true) =>
+  const handoff = (to: Account, t: Tab | undefined = tab, ask = true, sink: (m: string) => void = setError) =>
     run(async () => {
-      if (!cwd || !t?.sessionId) throw new Error('Open a Claude session first')
+      if (!t?.sessionId || !t.cwd) throw new Error('Open a Claude session first')
+      if (t.stale) throw new Error(STALE)
       if (to.id === t.accountId) return
-      if (ask && !confirm(`Continue this session on "${to.label}"? The current process will be stopped.`)) return
-      const r = await window.relay.handoff({ ptyId: t.ptyId, fromAccountId: t.accountId, toAccountId: to.id, cwd, sessionId: t.sessionId })
+      if (ask && !confirm(`Continue session "${t.title}" on "${to.label}"? The current process will be stopped.`)) return
+      const r = await window.relay.handoff({ ptyId: t.ptyId, fromAccountId: t.accountId, toAccountId: to.id, cwd: t.cwd, sessionId: t.sessionId })
       // nothing is typed into the new session
-      open({ ptyId: r.ptyId, accountId: to.id, title: t.title, hint: `Sesión continuada en ${to.label}. Escribe "continúa" para seguir.`, ...(r.sessionId ? { sessionId: r.sessionId } : {}) }, t.ptyId)
+      open({ ptyId: r.ptyId, accountId: to.id, cwd: t.cwd, title: t.title, hint: `Sesión continuada en ${to.label}. Escribe "continúa" para seguir.`, ...(r.sessionId ? { sessionId: r.sessionId } : {}) }, t.ptyId)
       setActive(to.id)
+      dropHit(t.ptyId)
       await refresh(cwd)
       void loadStatus(to.id, true)
       void loadStatus(t.accountId, true)
-    })
+    }, sink)
 
   const wait = () =>
     run(async () => {
       if (hit?.resetAt) await window.relay.remindReset(hit.accountId, hit.resetAt)
-      setHit(null)
-    })
+      dropHit()
+    }, setModalError)
 
   return (
     <div className="flex h-full">
@@ -236,8 +269,8 @@ export function App() {
           {accounts.map((a) => (
             <span key={a.id} className="nodrag flex items-center gap-1">
               <button
-                onClick={() => (tab?.sessionId ? handoff(a) : setActive(a.id))}
-                title={tab?.sessionId ? 'Continue this session on this account' : 'Select account'}
+                onClick={() => (tab?.sessionId ? (tab.stale ? setError(STALE) : handoff(a)) : setActive(a.id))}
+                title={tab?.sessionId ? (tab.stale ? STALE : 'Continue this session on this account') : 'Select account'}
                 className={`rounded-full px-3 py-1 text-xs ${a.id === (tab?.accountId ?? active) ? 'bg-[#d97757] text-black' : 'border border-white/20 text-white/70 hover:bg-white/10'}`}
               >
                 {a.label}
@@ -259,6 +292,12 @@ export function App() {
             </div>
           ))}
         </div>
+        {notices.map((n, i) => (
+          <div key={i} className="flex justify-between border-b border-white/10 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200">
+            {n}
+            <button onClick={() => setNotices((ns) => ns.filter((_, j) => j !== i))}>✕</button>
+          </div>
+        ))}
         {tab?.hint && (
           <div className="flex justify-between border-b border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
             {tab.hint}
@@ -277,6 +316,9 @@ export function App() {
           <div className="w-96 rounded border border-white/10 bg-[#262624] p-4 text-sm">
             <b>{accounts.find((a) => a.id === hit.accountId)?.label} llegó a su límite ({hit.kind})</b>
             <p className="mb-3 text-xs text-white/50">Se reinicia {hit.resetText}. Relay no cambia de cuenta por sí solo.</p>
+            <p className="mb-2 truncate text-xs text-white/70">Sesión: {hitTab?.title ?? '(pestaña cerrada)'}</p>
+            {hitTab?.stale && <p className="mb-2 text-xs text-red-400">{STALE}</p>}
+            {modalError && <p className="mb-2 text-xs text-red-400">{modalError}</p>}
             <div className="space-y-1">
               {accounts
                 .filter((a) => a.id !== hit.accountId && a.provider === accounts.find((x) => x.id === hit.accountId)?.provider)
@@ -286,12 +328,16 @@ export function App() {
                   return (
                     <button
                       key={a.id}
-                      disabled={off}
-                      onClick={() => {
-                        const t = tabs.find((x) => x.ptyId === hit.ptyId)
-                        setHit(null)
-                        void handoff(a, t, false)
-                      }}
+                      disabled={off || !hitTab || hitTab.stale}
+                      onClick={() =>
+                        run(async () => {
+                          // the click is the confirmation, but the target may have changed since the card was drawn
+                          const f = await window.relay.accounts.status(a.id, true)
+                          setStatuses((m) => ({ ...m, [a.id]: f }))
+                          if (f.loggedIn !== true || f.limited) throw new Error(`${a.label} ya no está disponible (${f.limited ? 'limitada' : 'sin sesión'})`)
+                          await handoff(a, hitTab, false, setModalError)
+                        }, setModalError)
+                      }
                       className="block w-full rounded border border-white/10 px-3 py-2 text-left enabled:hover:bg-white/10 disabled:opacity-40"
                     >
                       Continuar en {a.label}
@@ -302,9 +348,11 @@ export function App() {
                   )
                 })}
             </div>
+            {!hit.resetAt && <p className="mt-2 text-xs text-white/40">No se pudo interpretar la hora de reinicio, así que no se puede programar un recordatorio.</p>}
+            {hits.length > 1 && <p className="mt-2 text-xs text-white/40">{hits.length - 1} aviso(s) más en cola.</p>}
             <div className="mt-3 flex justify-end gap-2">
-              <button className={btn} onClick={wait}>Esperar al reinicio</button>
-              <button className={btn} onClick={() => setHit(null)}>Cerrar</button>
+              <button className={btn} disabled={!hit.resetAt} title={hit.resetAt ? '' : 'No se pudo leer la hora de reinicio; no hay recordatorio posible'} onClick={wait}>Esperar al reinicio</button>
+              <button className={btn} onClick={() => dropHit()}>Cerrar</button>
             </div>
           </div>
         </div>

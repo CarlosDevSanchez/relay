@@ -58,3 +58,9 @@ export function checkHandoff(req: HandoffRequest, accounts: Account[], projects:
   const to = checkStart({ accountId: req.toAccountId, cwd: req.cwd, mode: 'resume', sessionId: req.sessionId }, accounts, projects)
   return [from, to]
 }
+
+/** Reminder time from the renderer: finite, in the future, within 8 days (weekly limits are the longest). */
+export function checkReminder(resetAt: unknown, now = Date.now()): number {
+  if (typeof resetAt !== 'number' || !Number.isFinite(resetAt) || resetAt <= now || resetAt > now + 8 * 86400_000) throw new Error('Invalid resetAt')
+  return resetAt
+}

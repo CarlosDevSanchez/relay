@@ -83,4 +83,4 @@ Estado al cierre de F5: 100 tests y e2e con 5 escenarios en verde; auditoría PA
 - `bun install` · `bun run dev` · `bun run typecheck` · `bun run test` · `bun run coverage` · `bun run build` · `bun run e2e` (stubs de `claude` y `codex`, HOME temporal; nunca toca datos reales).
 - Iconos: `node_modules/.bin/electron scripts/build-icons.mjs`.
 - Datos de la app: `~/.relay/` (`accounts.json`, `projects.json`, `prefs.json`, `copies.json`, `sessions.json`, `shared/`, `backups/`, `accounts/<id>/`, `status/`, `bin/`). Se puede cambiar con `RELAY_HOME`.
-- Worktree de prueba manual: `../relay-manual-test` (fijado a `1a87166`). Se elimina al terminar las pruebas, siguiendo la regla de limpieza de worktrees.
+- Worktree de prueba manual: `../relay-manual-test` (fijado a `ab08f7a`). Se elimina al terminar las pruebas, siguiendo la regla de limpieza de worktrees.

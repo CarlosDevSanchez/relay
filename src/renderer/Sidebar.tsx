@@ -85,14 +85,14 @@ function Collapsible({ open, children }: { open: boolean; children: ReactNode })
     return () => clearTimeout(t)
   }, [open])
   return (
-    <div className={`grid transition-[grid-template-rows,visibility] duration-200 ${open ? 'visible grid-rows-[1fr]' : 'invisible grid-rows-[0fr]'}`}>
+    <div className={`grid grid-cols-[minmax(0,1fr)] transition-[grid-template-rows,visibility] duration-200 ${open ? 'visible grid-rows-[1fr]' : 'invisible grid-rows-[0fr]'}`}>
       <div className={`min-h-0 ${open && !moving ? '' : 'overflow-clip'}`}>{children}</div>
     </div>
   )
 }
 
 const SectionHeader = ({ title, open, toggle, addLabel, add }: { title: string; open: boolean; toggle(): void; addLabel: string; add(): void }) => (
-  <ul className="menu w-full p-0 px-1">
+  <ul className="menu w-full flex-nowrap p-0 px-1">
     <li className="menu-title flex-row items-center justify-between pr-1">
       <button className="flex items-center gap-1 rounded text-[11px] uppercase tracking-wide hover:opacity-100 focus-visible:outline-2 focus-visible:outline-primary" aria-expanded={open} aria-label={`${open ? 'Contraer' : 'Expandir'} ${title}`} onClick={toggle}>
         <span className={`transition-transform ${open ? '' : '-rotate-90'}`}><IconChevron open /></span>
@@ -106,6 +106,8 @@ const SectionHeader = ({ title, open, toggle, addLabel, add }: { title: string; 
 )
 
 /** The worst bar level of the live windows (drives the dot colour and the compact bars). */
+const stText = (s: AccountStatus): string => (s.loggedIn === null ? (s.unchecked ? 'sin comprobar' : 'estado desconocido') : s.loggedIn ? (s.email ?? 'sesión iniciada') : 'sin sesión')
+
 const worst = (ws: UsageWindow[], warnAt: number): 'ok' | 'warning' | 'error' => {
   const l = ws.map((w) => usageLevel(w.pct, warnAt))
   return l.includes('error') ? 'error' : l.includes('warning') ? 'warning' : 'ok'
@@ -176,7 +178,7 @@ export function Sidebar(p: SidebarProps) {
               const ws = live(a.id)
               const tip = `${a.label}${ws.length ? ` · ${ws.map((w) => `${w.id} ${Math.round(w.pct)}%`).join(' · ')}` : ''}`
               return (
-                <span key={a.id} className="tooltip tooltip-right before:max-w-48" data-tip={tip}>
+                <span key={a.id} title={tip}>
                   <button className={`btn btn-ghost btn-xs btn-square ${a.id === p.active ? 'ring-1 ring-primary' : ''}`} data-testid="account-dot" aria-label={tip} onClick={() => p.selectAccount(a.id)}>
                     <Dot tone={toneOf(p.statuses[a.id], ws, p.warnAt)} />
                   </button>
@@ -194,15 +196,16 @@ export function Sidebar(p: SidebarProps) {
               const expanded = ui.expanded.includes(a.id)
               return (
                 <div key={a.id} data-testid="account-card" data-expanded={expanded} onClick={() => p.selectAccount(a.id)} className={`card card-border card-sm lift group cursor-pointer shadow-sm hover:shadow-md ${a.id === p.active ? 'border-primary bg-base-100' : 'bg-base-100/60 hover:bg-base-100'}`}>
-                  <div className="card-body gap-1.5 p-2.5">
+                  <div className="card-body gap-1.5 p-2.5 @container">
                     <div className="flex items-center gap-1.5">
                       <Dot tone={toneOf(s, ws, p.warnAt)} />
-                      <button className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-primary" onClick={(e) => (e.stopPropagation(), p.selectAccount(a.id))}>{a.label}</button>
-                      {s?.plan && <span className="badge badge-soft badge-primary badge-xs uppercase">{s.plan}</span>}
-                      <span className="badge badge-ghost badge-xs capitalize" data-testid="provider-badge">{a.provider}</span>
-                      <span className="opacity-0 transition-opacity focus-within:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
+                      <button title={a.label} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-primary" onClick={(e) => (e.stopPropagation(), p.selectAccount(a.id))}>{a.label}</button>
+                      {s?.plan && <span className="badge badge-soft badge-primary badge-xs shrink-0 uppercase">{s.plan}</span>}
+                      <span className="badge badge-ghost badge-xs hidden shrink-0 capitalize @[17rem]:inline-flex" data-testid="provider-badge">{a.provider}</span>
+                      <span className="shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
                         <Dropdown
                           title="Opciones de cuenta"
+                          tip={null}
                           trigger={<IconKebab />}
                           btnClass="btn btn-ghost btn-xs btn-square"
                           menuClass="w-52"
@@ -215,7 +218,7 @@ export function Sidebar(p: SidebarProps) {
                           ]}
                         />
                       </span>
-                      <button className="btn btn-ghost btn-xs btn-square" data-testid="card-toggle" aria-expanded={expanded} aria-label={`${expanded ? 'Contraer' : 'Expandir'} ${a.label}`} onClick={(e) => (e.stopPropagation(), toggleCard(a.id))}>
+                      <button className="btn btn-ghost btn-xs btn-square shrink-0" data-testid="card-toggle" aria-expanded={expanded} aria-label={`${expanded ? 'Contraer' : 'Expandir'} ${a.label}`} onClick={(e) => (e.stopPropagation(), toggleCard(a.id))}>
                         <span className={`transition-transform ${expanded ? '' : '-rotate-90'}`}><IconChevron open /></span>
                       </button>
                     </div>
@@ -226,15 +229,15 @@ export function Sidebar(p: SidebarProps) {
                     ) : expanded ? null : ws.length && u ? ( // the expanded card shows the same data in detail
                       <MiniBars ws={ws} u={u} warnAt={p.warnAt} now={now} />
                     ) : (
-                      <div className={`truncate text-[11px] ${s.limited ? 'text-warning' : 'opacity-60'}`} data-testid="card-status">
-                        {s.limited ? `Limitada hasta ${s.limited.resetText}` : s.loggedIn === null ? 'estado desconocido' : s.loggedIn ? (s.email ?? 'sesión iniciada') : 'sin sesión'}
+                      <div className={`truncate text-[11px] ${s.limited ? 'text-warning' : 'opacity-60'}`} data-testid="card-status" title={s.limited ? `Limitada hasta ${s.limited.resetText}` : stText(s)}>
+                        {s.limited ? `Limitada hasta ${s.limited.resetText}` : stText(s)}
                       </div>
                     )}
                     <Collapsible open={expanded}>
                       {s && (
                         <div className="space-y-1.5 pt-1 text-xs" data-testid="card-details">
-                          <div className="truncate text-[11px] opacity-70">{s.loggedIn === null ? 'estado desconocido' : s.loggedIn ? (s.email ?? 'sesión iniciada') : 'sin sesión'}</div>
-                          {s.limited && <div className="text-warning">Limitada hasta {s.limited.resetText}</div>}
+                          <div className="truncate text-[11px] opacity-70" title={stText(s)}>{NAMES[a.provider]} · {stText(s)}</div>
+                          {s.limited && <div className="break-words text-warning">Limitada hasta {s.limited.resetText}</div>}
                           <UsageBars ws={ws} u={u} warnAt={p.warnAt} now={now} />
                           {a.provider === 'claude' && <div className="text-[11px] opacity-60">{fmt(s.tokens5h)} tokens / 5h{u ? ` · actualizado ${ago(u.updatedAt, now)}` : ''}</div>}
                           {a.sharedMemory && <div className="flex items-center gap-1 text-[11px] opacity-60"><IconLink /> Memoria compartida</div>}
@@ -253,7 +256,7 @@ export function Sidebar(p: SidebarProps) {
         {ui.projects && (
           <div className="flex flex-wrap gap-1 px-4 pb-1" data-testid="project-dots">
             {p.projects.map((x) => (
-              <span key={x} className="tooltip tooltip-right before:max-w-48" data-tip={base(x)}>
+              <span key={x} title={base(x)}>
                 <button className={`btn btn-ghost btn-xs btn-square ${x === p.cwd ? 'ring-1 ring-primary' : ''}`} aria-label={base(x)} onClick={() => p.selectProject(x)}>
                   <span aria-hidden="true" className={`status ${x === p.cwd ? 'status-primary' : 'status-neutral'}`} />
                 </button>
@@ -262,27 +265,27 @@ export function Sidebar(p: SidebarProps) {
           </div>
         )}
         <Collapsible open={!ui.projects}>
-          <ul className="menu w-full p-0 px-1">
+          <ul className="menu w-full flex-nowrap p-0 px-1">
             {p.projects.length === 0 && <li className="menu-disabled"><span>Sin proyectos</span></li>}
             {p.projects.map((x) => (
               <li key={x}>
-                <details open={isOpen(x)}>
-                  <summary title={x} className={x === p.cwd ? 'menu-active' : ''} onClick={(e) => (e.preventDefault(), setOpen((o) => ({ ...o, [x]: !isOpen(x) })), p.selectProject(x))}>
+                <details className="w-full min-w-0 max-w-full" open={isOpen(x)}>
+                  <summary title={x} className={`grid-cols-[auto_minmax(0,1fr)_auto] ${x === p.cwd ? 'menu-active' : ''}`} onClick={(e) => (e.preventDefault(), setOpen((o) => ({ ...o, [x]: !isOpen(x) })), p.selectProject(x))}>
                     <IconFolder /> <span className="min-w-0 flex-1 truncate">{base(x)}</span>
                     <span onClick={(e) => (e.preventDefault(), e.stopPropagation())}>
-                      <Dropdown title="Opciones de proyecto" trigger={<IconKebab />} btnClass="btn btn-ghost btn-xs btn-square" items={[{ label: 'Abrir sesión existente…', onClick: () => p.openExisting(x) }]} />
+                      <Dropdown title="Opciones de proyecto" tip={null} trigger={<IconKebab />} btnClass="btn btn-ghost btn-xs btn-square" items={[{ label: 'Abrir sesión existente…', onClick: () => p.openExisting(x) }]} />
                     </span>
                   </summary>
-                  <ul>
+                  <ul className="flex-nowrap">
                     {(p.sessions[x] ?? []).length === 0 && <li className="menu-disabled"><span className="text-xs">Sin sesiones</span></li>}
                     {(p.sessions[x] ?? []).map((s) => (
                       <li key={`${s.accountId}${s.id}`} className={p.missing(prov(s.accountId)) ? 'menu-disabled' : ''}>
-                        <div className="flex items-center gap-0 p-0">
-                          <button onClick={() => p.resume(x, s)} disabled={p.missing(prov(s.accountId))} className="flex min-w-0 flex-1 flex-col items-start gap-0 px-3 py-1.5 text-left">
+                        <div className="flex w-full min-w-0 items-center gap-0 p-0">
+                          <button title={s.title} onClick={() => p.resume(x, s)} disabled={p.missing(prov(s.accountId))} className="flex min-w-0 flex-1 flex-col items-start gap-0 px-3 py-1.5 text-left">
                             <span className="w-full truncate text-xs font-medium">{s.title}</span>
-                            <span className="text-[11px] opacity-60">{label(s.accountId)} · {ago(s.mtimeMs)}{s.handoffs?.length ? ` · ↪ ${label(s.handoffs.at(-1)!.from)} → ${label(s.handoffs.at(-1)!.to)}` : ''}</span>
+                            <span className="w-full truncate text-[11px] opacity-60">{label(s.accountId)} · {ago(s.mtimeMs)}{s.handoffs?.length ? ` · ↪ ${label(s.handoffs.at(-1)!.from)} → ${label(s.handoffs.at(-1)!.to)}` : ''}</span>
                           </button>
-                          <Dropdown title="Opciones de sesión" trigger={<IconKebab />} btnClass="btn btn-ghost btn-xs btn-square" items={[{ label: 'Quitar del historial de Relay', onClick: () => p.forget(x, s), danger: true }]} />
+                          <Dropdown title="Opciones de sesión" tip={null} trigger={<IconKebab />} btnClass="btn btn-ghost btn-xs btn-square" items={[{ label: 'Quitar del historial de Relay', onClick: () => p.forget(x, s), danger: true }]} />
                         </div>
                       </li>
                     ))}

@@ -35,14 +35,21 @@ export interface MenuItem {
   title?: string
   danger?: boolean
 }
-export function Dropdown({ trigger, items, title, align = 'right', btnClass = 'btn btn-sm btn-ghost', tip = 'tooltip-bottom', menuClass = 'w-60' }: { trigger: ReactNode; items: MenuItem[]; title?: string; align?: 'left' | 'right'; btnClass?: string; tip?: string; menuClass?: string }) {
+export function Dropdown({ trigger, items, title, align = 'right', btnClass = 'btn btn-sm btn-ghost', tip = 'tooltip-bottom', menuClass = 'w-60' }: { trigger: ReactNode; items: MenuItem[]; title?: string; align?: 'left' | 'right'; btnClass?: string; tip?: string | null; menuClass?: string }) {
   return (
     <div className={`dropdown nodrag ${align === 'right' ? 'dropdown-end' : ''}`}>
-      <div className={`tooltip ${tip}`} data-tip={title}>
-        <div tabIndex={0} role="button" aria-haspopup="menu" aria-label={title} className={`${btnClass} gap-1`}>
+      {/* tip = null: native title only (a CSS tooltip is laid out wide even while invisible, which widens its scroll container) */}
+      {tip === null ? (
+        <div tabIndex={0} role="button" aria-haspopup="menu" aria-label={title} title={title} className={`${btnClass} gap-1`}>
           {trigger}
         </div>
-      </div>
+      ) : (
+        <div className={`tooltip ${tip}`} data-tip={title}>
+          <div tabIndex={0} role="button" aria-haspopup="menu" aria-label={title} className={`${btnClass} gap-1`}>
+            {trigger}
+          </div>
+        </div>
+      )}
       <ul tabIndex={0} role="menu" className={`dropdown-content menu z-30 mt-1 max-w-[calc(100vw-1rem)] ${menuClass} rounded-box border border-base-300 bg-base-100 p-1 shadow-lg`}>
         {items.length === 0 && <li className="menu-disabled"><span>Sin opciones</span></li>}
         {items.map((it) => (

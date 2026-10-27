@@ -34,7 +34,7 @@ session() {
   else sleep 60; fi
 }
 case "$1 $2" in
-  "auth status") [ -n "$CLAUDE_CONFIG_DIR" ] && touch "$CLAUDE_CONFIG_DIR/.claude.json"; echo '{"loggedIn":true,"email":"test@example.com","subscriptionType":"max"}' ;;
+  "auth status") [ -n "$CLAUDE_CONFIG_DIR" ] && touch "$CLAUDE_CONFIG_DIR/.claude.json"; echo "{\\"loggedIn\\":true,\\"email\\":\\"\${STUB_EMAIL:-test@example.com}\\",\\"subscriptionType\\":\\"max\\"}" ;;
   "auth login") sleep 1; echo "Paste code here"; read -t 20 -r code; echo "CODE:$code" >> "${log}"; exit 0 ;;
   "--session-id "*|"--resume "*) sleep 1; echo "Claude Code (stub): sesión interactiva"; session ;;
   *) echo "2.1.0 (Claude Code)" ;;
@@ -69,6 +69,47 @@ const launch = (d, extra = {}) => {
   const env = { ...process.env, RELAY_HOME: d.relayHome, HOME: d.home, PATH: `${d.bin}:/usr/bin:/bin`, ...extra }
   delete env.ELECTRON_RUN_AS_NODE
   return electron.launch({ args: [root, `--user-data-dir=${join(d.home, 'userdata')}`], env }) // own Chromium profile: localStorage (sidebar UI state) never leaks between scenarios or into a real app profile
+}
+
+// every visible element of the sidebar stays inside its box and the page never scrolls sideways
+const sidebarFits = async (page, state) => {
+  const bad = await page.evaluate(() => {
+    const sb = document.querySelector('aside').getBoundingClientRect()
+    const out = []
+    for (const el of document.querySelectorAll('aside *')) {
+      if (getComputedStyle(el).visibility === 'hidden') continue
+      const r = el.getBoundingClientRect()
+      if (!r.width || !r.height) continue
+      if (r.left < sb.left - 0.5 || r.right > sb.right + 0.5) out.push(`${el.tagName}.${String(el.className).slice(0, 40)} ${Math.round(r.left - sb.left)}..${Math.round(r.right - sb.left)} of ${Math.round(sb.width)}`)
+    }
+    const sc = document.querySelector('aside .overflow-y-auto')
+    if (sc.scrollLeft !== 0) out.push(`scrollLeft ${sc.scrollLeft}`)
+    // the shell never scrolls sideways
+    const de = document.documentElement
+    if (de.scrollWidth > de.clientWidth) out.push(`html scrollWidth ${de.scrollWidth} > ${de.clientWidth}`)
+    if (window.scrollX !== 0) out.push(`scrollX ${window.scrollX}`)
+    for (const sel of ['main', 'aside']) {
+      const e = document.querySelector(sel)
+      if (e.scrollWidth > e.clientWidth) out.push(`${sel} scrollWidth ${e.scrollWidth} > ${e.clientWidth}`)
+    }
+    // nothing may be wider than its box unless it truncates with an ellipsis (a clipped overflow = content cut off or pushed out)
+    for (const el of document.querySelectorAll('aside *')) {
+      if (getComputedStyle(el).visibility === 'hidden' || el.clientWidth === 0) continue
+      if (el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow !== 'ellipsis') out.push(`overflow ${el.tagName}.${String(el.className).slice(0, 40)} ${el.scrollWidth}>${el.clientWidth}`)
+    }
+    return out
+  })
+  assert.deepEqual(bad, [], `sidebar content outside its box / page scrolls sideways (${state})`)
+  // focusing every focusable must not scroll the shell either
+  const sx = await page.evaluate(() => {
+    for (const el of document.querySelectorAll('button, [tabindex], a, input, select, textarea')) {
+      if (el.closest('dialog') || getComputedStyle(el).visibility === 'hidden') continue
+      el.focus()
+    }
+    document.activeElement?.blur()
+    return [window.scrollX, document.documentElement.scrollLeft, document.body.scrollLeft, document.querySelector('aside .overflow-y-auto').scrollLeft]
+  })
+  assert.deepEqual(sx, [0, 0, 0, 0], `focus pass scrolled the shell (${state})`)
 }
 
 // ---- scenario 1: claude present, candidate dirs, onboarding -> dashboard ----
@@ -449,41 +490,7 @@ const launch = (d, extra = {}) => {
     const alfa = cards.filter({ hasText: 'Alfa' })
     const beta = cards.filter({ hasText: 'Beta' })
     const side = page.locator('aside')
-    // every visible element of the sidebar stays inside its box (and the scroll area never scrolls sideways)
-    const inside = async (state) => {
-      const bad = await page.evaluate(() => {
-        const sb = document.querySelector('aside').getBoundingClientRect()
-        const out = []
-        for (const el of document.querySelectorAll('aside *')) {
-          if (getComputedStyle(el).visibility === 'hidden') continue
-          const r = el.getBoundingClientRect()
-          if (!r.width || !r.height) continue
-          if (r.left < sb.left - 0.5 || r.right > sb.right + 0.5) out.push(`${el.tagName}.${String(el.className).slice(0, 40)} ${Math.round(r.left - sb.left)}..${Math.round(r.right - sb.left)} of ${Math.round(sb.width)}`)
-        }
-        const sc = document.querySelector('aside .overflow-y-auto')
-        if (sc.scrollLeft !== 0) out.push(`scrollLeft ${sc.scrollLeft}`)
-        // the shell never scrolls sideways
-        const de = document.documentElement
-        if (de.scrollWidth > de.clientWidth) out.push(`html scrollWidth ${de.scrollWidth} > ${de.clientWidth}`)
-        if (window.scrollX !== 0) out.push(`scrollX ${window.scrollX}`)
-        for (const sel of ['main', 'aside']) {
-          const e = document.querySelector(sel)
-          if (e.scrollWidth > e.clientWidth) out.push(`${sel} scrollWidth ${e.scrollWidth} > ${e.clientWidth}`)
-        }
-        return out
-      })
-      assert.deepEqual(bad, [], `sidebar content outside its box / page scrolls sideways (${state})`)
-      // focusing every focusable must not scroll the shell either
-      const sx = await page.evaluate(() => {
-        for (const el of document.querySelectorAll('button, [tabindex], a, input, select, textarea')) {
-          if (el.closest('dialog') || getComputedStyle(el).visibility === 'hidden') continue
-          el.focus()
-        }
-        document.activeElement?.blur()
-        return [window.scrollX, document.documentElement.scrollLeft, document.body.scrollLeft, document.querySelector('aside .overflow-y-auto').scrollLeft]
-      })
-      assert.deepEqual(sx, [0, 0, 0, 0], `focus pass scrolled the shell (${state})`)
-    }
+    const inside = (state) => sidebarFits(page, state)
     assert.equal(await side.getByRole('button', { name: /sesión vieja/ }).count(), 0, 'a transcript Relay did not create is not in the sidebar')
     // cards are compact by default: no detail rows, the section is not collapsed
     for (const c of [alfa, beta]) {
@@ -652,6 +659,74 @@ const launch = (d, extra = {}) => {
     await app.close()
   }
 }
+// ---- scenario 8: real-data sidebar (long labels / email / reset text / session title never push anything out of the sidebar) ----
+{
+  const d = setup('eight')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  copyFileSync(cstub, join(d.bin, 'codex'))
+  const proj = join(d.home, 'freelancer-voicecall-with-a-long-folder-name')
+  mkdirSync(proj)
+  const cwd = realpathSync(proj)
+  mkdirSync(d.relayHome, { recursive: true })
+  const personal = join(d.relayHome, 'accounts', 'p1p1p1p1')
+  const codexDir = join(d.relayHome, 'accounts', 'c1c1c1c1')
+  const mailo = join(d.home, '.claude-mailo') // imported, never used by the CLI: "sin comprobar"
+  for (const x of [personal, codexDir, mailo]) mkdirSync(x, { recursive: true })
+  writeFileSync(join(personal, '.claude.json'), '{}')
+  writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([cwd]))
+  writeFileSync(
+    join(d.relayHome, 'accounts.json'),
+    JSON.stringify([
+      { id: 'p1p1p1p1', label: 'Personal CarlosDev', provider: 'claude', configDir: personal, sharedMemory: true },
+      { id: 'm1m1m1m1', label: 'Mailo', provider: 'claude', configDir: mailo, sharedMemory: false },
+      { id: 'c1c1c1c1', label: 'Codex', provider: 'codex', configDir: codexDir, sharedMemory: true }
+    ])
+  )
+  // Personal is limited (transcript rate_limit line) and has a long email; one registered session with a ~120 char title
+  const SID = '0e0e0e0e-aaaa-bbbb-cccc-222222222222'
+  const enc = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  const f = join(personal, 'projects', enc, `${SID}.jsonl`)
+  mkdirSync(dirname(f), { recursive: true })
+  const title = 'Refactoriza el módulo de llamadas de voz para que soporte reconexión automática y revisa también los tests de integración pendientes'
+  writeFileSync(
+    f,
+    JSON.stringify({ type: 'user', message: { role: 'user', content: title } }) + '\n' +
+      JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), isApiErrorMessage: true, error: 'rate_limit', apiErrorStatus: 429, message: { model: '<synthetic>', content: [{ type: 'text', text: "You've hit your session limit · resets 1:10am (America/Bogota)" }] } }) + '\n'
+  )
+  writeFileSync(join(d.relayHome, 'sessions.json'), JSON.stringify([{ provider: 'claude', accountId: 'p1p1p1p1', sessionId: SID, cwd, createdAt: Date.now(), lastActiveAt: Date.now(), origin: 'new', handoffs: [{ from: 'm1m1m1m1', to: 'p1p1p1p1', at: Date.now() }] }]))
+  const app = await launch(d, { STUB_EMAIL: 'relay-user+long@example.com' })
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    const cards = page.getByTestId('account-card')
+    await cards.nth(2).waitFor({ timeout: t })
+    const side = page.locator('aside')
+    await side.getByRole('button', { name: /Refactoriza el módulo/ }).waitFor({ timeout: t })
+    await page.getByTestId('card-status').filter({ hasText: /Limitada hasta/ }).waitFor({ timeout: t })
+    await cards.first().getByText('sin comprobar').or(cards.nth(1).getByText('sin comprobar')).first().waitFor({ timeout: t })
+    const states = async (size) => {
+      await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].setSize(s[0], s[1]), size)
+      await page.waitForTimeout(400)
+      await sidebarFits(page, `real data, ${size[0]}px, compact`)
+      for (let i = 0; i < 3; i++) if ((await cards.nth(i).getAttribute('data-expanded')) !== 'true') await cards.nth(i).getByTestId('card-toggle').click()
+      await page.waitForTimeout(500)
+      await sidebarFits(page, `real data, ${size[0]}px, expanded`)
+      if (size[0] === 1280) await side.screenshot({ path: join(shots, 'sidebar-realdata.png') })
+      for (let i = 0; i < 3; i++) await cards.nth(i).getByTestId('card-toggle').click()
+      await page.waitForTimeout(500)
+      await page.getByRole('button', { name: 'Contraer Cuentas' }).click()
+      await page.waitForTimeout(500)
+      await sidebarFits(page, `real data, ${size[0]}px, collapsed`)
+      await page.getByRole('button', { name: 'Expandir Cuentas' }).click()
+      await page.waitForTimeout(500)
+    }
+    await states([1280, 800])
+    await states([900, 600])
+  } finally {
+    await app.close()
+  }
+}
+
 // ---- scenario 7: only Codex installed -> the onboarding account dialog defaults to Codex ----
 {
   const d = setup('seven')

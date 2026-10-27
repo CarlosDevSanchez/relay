@@ -7,6 +7,8 @@ export interface Account {
   configDir: string
   /** set by main on listing: Relay owns (and may delete) the dir */
   managed?: boolean
+  /** set by main on listing: this is ~/.claude, run without CLAUDE_CONFIG_DIR */
+  defaultInstall?: boolean
   /** Claude only: memory/skills/agents/commands are symlinks into ~/.relay/shared (undefined = never asked) */
   sharedMemory?: boolean
   /** set by main on listing: linked items that are no longer links into the shared store */
@@ -69,8 +71,53 @@ export interface LimitHit {
   resetAt: number | null
 }
 
+/** An existing Claude config dir found in the home dir (importable). */
+export interface Candidate {
+  dir: string
+  loggedIn: boolean | null
+  /** not probed: the dir has no .claude.json yet and probing would create files in it */
+  unchecked?: boolean
+  default?: boolean
+  email?: string
+  plan?: string
+}
+
 export interface Prefs {
   notifications: { system: boolean; sound: boolean }
+}
+
+export interface CliInfo {
+  installed: boolean
+  version?: string
+}
+export type CliStatus = Record<ProviderId, CliInfo>
+
+export interface CatalogEntry {
+  name: string
+  description: string
+}
+/** accountId null = the shared store (~/.relay/shared) */
+export interface CatalogLocation {
+  accountId: string | null
+  label: string
+  skills: CatalogEntry[]
+  agents: CatalogEntry[]
+  commands: CatalogEntry[]
+}
+
+/** Only these safe fields ever leave main for MCP servers (never env, headers, args). */
+export interface McpServer {
+  name: string
+  scope: 'user' | 'local' | 'project'
+  transport: 'stdio' | 'http' | 'sse' | 'unknown'
+  /** command basename (stdio) or URL origin (http/sse) */
+  target: string
+  /** local scope: the project path */
+  project?: string
+}
+export interface McpReport {
+  accounts: { accountId: string; servers: McpServer[] }[]
+  projects: { cwd: string; servers: McpServer[] }[]
 }
 
 export interface RelayApi {
@@ -78,6 +125,8 @@ export interface RelayApi {
     list(): Promise<Account[]>
     add(label: string, provider: ProviderId, configDir?: string): Promise<Account>
     pickDir(): Promise<string | null>
+    /** ~/.claude and ~/.claude-* dirs that exist and are not yet accounts */
+    candidates(): Promise<Candidate[]>
     rename(id: string, label: string): Promise<Account[]>
     remove(id: string): Promise<Account[]>
     status(id: string, refresh?: boolean): Promise<AccountStatus>
@@ -104,6 +153,15 @@ export interface RelayApi {
   }
   handoff(req: HandoffRequest): Promise<StartResult>
   prefs: { get(): Promise<Prefs>; set(patch: Partial<Prefs>): Promise<Prefs> }
+  cli: {
+    detect(): Promise<CliStatus>
+    /** after a main-side confirmation, runs the provider's official installer in a new pty; null = cancelled */
+    install(provider: ProviderId): Promise<number | null>
+  }
+  catalog: { list(): Promise<CatalogLocation[]>; open(accountId: string): Promise<void> }
+  mcp: { list(): Promise<McpReport> }
+  /** shows a test system notification; false = not supported on this system */
+  notifyTest(): Promise<boolean>
   /** user chose to wait: Relay shows a notification at resetAt (never types into the CLI) */
   remindReset(accountId: string, resetAt: number): Promise<void>
   onLimit(cb: (hit: LimitHit) => void): () => void

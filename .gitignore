@@ -5,3 +5,4 @@ dist
 *.log
 .claude
 coverage
+e2e/screenshots

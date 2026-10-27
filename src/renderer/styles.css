@@ -1,4 +1,25 @@
 @import 'tailwindcss';
-html, body, #root { height: 100%; margin: 0; background: #1f1e1d; color: #e8e6e3; font-family: system-ui, sans-serif; }
+
+/* design tokens: colors, radius, font sizes (use as bg-surface, text-muted, rounded-card ...) */
+@theme {
+  --color-bg: #1f1e1d;
+  --color-surface: #262624;
+  --color-card: #2d2c2a;
+  --color-line: rgb(255 255 255 / 0.1);
+  --color-fg: #e8e6e3;
+  --color-muted: rgb(232 230 227 / 0.55);
+  --color-accent: #d97757;
+  --color-ok: #4ade80;
+  --color-warn: #fbbf24;
+  --color-bad: #f87171;
+  --radius-card: 0.5rem;
+  --text-sm: 0.8125rem;
+  --text-xs: 0.75rem;
+}
+html, body, #root { height: 100%; margin: 0; background: var(--color-bg); color: var(--color-fg); font-family: system-ui, sans-serif; font-size: 13px; }
 .drag { -webkit-app-region: drag; }
 .nodrag { -webkit-app-region: no-drag; }
+.btn { -webkit-app-region: no-drag; @apply rounded-card border border-line px-2.5 py-1 text-xs hover:bg-white/10 disabled:opacity-40 disabled:hover:bg-transparent; }
+.btn-primary { -webkit-app-region: no-drag; @apply rounded-card bg-accent px-3 py-1.5 text-sm font-medium text-black hover:brightness-110 disabled:opacity-40; }
+.input { @apply w-full rounded-card border border-line bg-bg px-2.5 py-1.5 text-sm outline-none focus:border-accent; }
+.card { @apply rounded-card border border-line bg-card p-3 text-xs; }

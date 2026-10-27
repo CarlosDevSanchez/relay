@@ -3,27 +3,30 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserWindow, Notification, app, dialog, ipcMain, shell } from 'electron'
-import type { Account, HandoffRequest, StartRequest, StartResult } from '../shared/types'
-import { buildEnv } from './env'
+import type { Account, Candidate, HandoffRequest, StartRequest, StartResult } from '../shared/types'
+import { buildEnv, plainEnv } from './env'
+import { buildCatalog } from './catalog'
+import { detectCli } from './cli'
+import { mcpReport } from './mcp'
 import { copySessionForHandoff, runHandoff, sourceExists } from './handoff'
 import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty } from './pty'
 import { providers } from './providers'
 import { type LimitInfo, scheduleAt, pickRebind, watchLimits, watchNewSession } from './limit'
-import { claudeProjectDir } from './paths'
+import { candidateDirs, canProbe, claudeProjectDir, isDefaultInstall } from './paths'
 import { loadPrefs, savePrefs } from './prefs'
 import { drifted, linkAccount, nextFlag, sharedDir, unlinkAccount } from './shared'
 import { listSessions } from './sessions'
 import { accountStatus } from './usage'
 import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount, setSharedMemory } from './store'
-import { checkAccountId, checkHandoff, checkNewAccount, checkReminder, checkRename, checkSharedToggle, checkStart } from './validate'
+import { checkAccountId, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSharedToggle, checkStart } from './validate'
 
-const HOME = join(homedir(), '.relay')
+const HOME = process.env.RELAY_HOME || join(homedir(), '.relay')
 let win: BrowserWindow
 
 const list = (): Account[] =>
   loadAccounts(HOME).map((a) => {
     const d = a.sharedMemory ? drifted(HOME, a) : []
-    return { ...a, managed: isManaged(HOME, a), ...(d.length ? { drift: d } : {}) }
+    return { ...a, managed: isManaged(HOME, a), ...(isDefaultInstall(a.configDir, homedir()) ? { defaultInstall: true } : {}), ...(d.length ? { drift: d } : {}) }
   })
 
 const send = (ch: string, ...a: unknown[]): void => {
@@ -35,9 +38,9 @@ const reminders = new Map<string, () => void>()
 
 const live = new Set<Notification>() // keep a reference until click/close, or GC may drop the click
 
-function notify(title: string, onClick?: () => void): void {
+function notify(title: string, onClick?: () => void, force = false): boolean {
   const prefs = loadPrefs(HOME).notifications
-  if (!prefs.system || !Notification.isSupported()) return
+  if ((!prefs.system && !force) || !Notification.isSupported()) return false
   const n = new Notification({ title, silent: !prefs.sound })
   live.add(n)
   setTimeout(() => live.delete(n), 10 * 60_000).unref() // macOS may never fire close
@@ -49,6 +52,14 @@ function notify(title: string, onClick?: () => void): void {
   })
   for (const ev of ['click', 'close', 'failed'] as const) n.on(ev as 'click', () => live.delete(n))
   n.show()
+  return true
+}
+
+const ptyData = (id: number, d: string): void => send('pty:data', id, d)
+const ptyExit = (id: number, code: number): void => {
+  watchers.get(id)?.stop()
+  watchers.delete(id)
+  send('pty:exit', id, code)
 }
 
 function onLimit(ptyId: number, a: Account, sessionId: string, h: LimitInfo): void {
@@ -80,12 +91,8 @@ async function start(req: StartRequest): Promise<StartResult> {
     buildEnv(a),
     a.id,
     sid,
-    (id, d) => send('pty:data', id, d),
-    (id, code) => {
-      watchers.get(id)?.stop()
-      watchers.delete(id)
-      send('pty:exit', id, code)
-    }
+    ptyData,
+    ptyExit
   )
   // live quota detection: tail the session transcript from its current end; follow /clear (new session id)
   if (sid && a.provider === 'claude') {
@@ -130,6 +137,17 @@ function handle(): void {
   ipcMain.handle('accounts:pickDir', async () => {
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'showHiddenFiles'] })
     return r.canceled ? null : (r.filePaths[0] ?? null)
+  })
+  ipcMain.handle('accounts:candidates', async (): Promise<Candidate[]> => {
+    const home = homedir()
+    return Promise.all(
+      candidateDirs(home, loadAccounts(HOME).map((a) => a.configDir)).map(async (dir): Promise<Candidate> => {
+        const def = isDefaultInstall(dir, home) ? { default: true } : {}
+        if (!canProbe(dir, home)) return { dir, loggedIn: null, unchecked: true, ...def } // probing would write into it
+        const s = await accountStatus({ id: `cand:${dir}`, label: '', provider: 'claude', configDir: dir }, true)
+        return { dir, loggedIn: s.loggedIn, ...def, ...(s.email ? { email: s.email } : {}), ...(s.plan ? { plan: s.plan } : {}) }
+      })
+    )
   })
   ipcMain.handle('accounts:rename', (_e, id: string, label: string) => {
     const lbl = checkRename(id, label, loadAccounts(HOME))
@@ -199,6 +217,30 @@ function handle(): void {
   ipcMain.handle('sessions:list', (_e, cwd: string) =>
     loadProjects(HOME).includes(cwd) ? listSessions(loadAccounts(HOME), cwd) : []
   )
+  ipcMain.handle('cli:detect', async () => {
+    const env = plainEnv()
+    const [claude, codex] = await Promise.all([detectCli(providers.claude.bin, env), detectCli(providers.codex.bin, env)])
+    return { claude, codex }
+  })
+  ipcMain.handle('cli:install', async (_e, provider: unknown) => {
+    const c = checkInstall(provider) // the command comes from providers.ts, never from the renderer
+    const r = await dialog.showMessageBox(win, {
+      type: 'question',
+      buttons: ['Cancelar', 'Instalar'],
+      defaultId: 0,
+      cancelId: 0,
+      message: `Instalar el CLI oficial (${provider})`,
+      detail: `Se ejecutará el instalador oficial de Anthropic en una terminal visible:\n\n${c.display}\n\nRelay no descarga nada por sí mismo.`
+    })
+    if (r.response !== 1) return null
+    return spawnPty(c.bin, c.args, homedir(), plainEnv(), '__install__', undefined, ptyData, ptyExit)
+  })
+  ipcMain.handle('catalog:list', () => buildCatalog(HOME, loadAccounts(HOME)))
+  ipcMain.handle('catalog:open', async (_e, id: unknown) => {
+    await shell.openPath(checkAccountId(id, loadAccounts(HOME)).configDir)
+  })
+  ipcMain.handle('mcp:list', () => mcpReport(loadAccounts(HOME), loadProjects(HOME)))
+  ipcMain.handle('notify:test', () => notify('Relay: notificación de prueba', undefined, true))
   ipcMain.handle('pty:start', (_e, req: StartRequest) => start(req))
   ipcMain.handle('prefs:get', () => loadPrefs(HOME))
   ipcMain.handle('prefs:set', (_e, patch) => savePrefs(HOME, patch))

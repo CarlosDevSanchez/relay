@@ -9,6 +9,23 @@ export interface Provider {
   loginArgs: string[]
   /** false = never run against the real CLI */
   verified: boolean
+  /** official installer, run in a visible terminal after the user confirms (Relay never downloads anything itself) */
+  installScript?: string
+}
+
+export interface InstallCommand {
+  bin: string
+  args: string[]
+  /** exact command line shown in the confirmation */
+  display: string
+}
+
+/** The renderer only names a provider; the command always comes from `installScript` here. */
+export function installCommand(id: unknown): InstallCommand | undefined {
+  if (typeof id !== 'string' || !Object.hasOwn(providers, id)) return undefined
+  // test hook (e2e): never reachable from the renderer
+  const script = (id === 'claude' && process.env.RELAY_E2E_INSTALL_SCRIPT) || providers[id as ProviderId].installScript
+  return script ? { bin: '/bin/bash', args: ['-lc', script], display: `/bin/bash -lc '${script}'` } : undefined
 }
 
 export const providers: Record<ProviderId, Provider> = {
@@ -18,8 +35,10 @@ export const providers: Record<ProviderId, Provider> = {
     resumeArgs: (id) => ['--resume', id],
     newArgs: (id) => ['--session-id', id],
     loginArgs: ['auth', 'login'],
-    verified: true
+    verified: true,
+    installScript: 'curl -fsSL https://claude.ai/install.sh | bash'
   },
+  // TODO(F5): Codex installScript (official installer) once verified.
   // UNVERIFIED: Codex is not installed here; CODEX_HOME / `codex resume <id>` taken from the brief.
   codex: {
     bin: 'codex',

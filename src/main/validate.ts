@@ -1,7 +1,7 @@
 import { realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import type { Account, HandoffRequest, StartRequest } from '../shared/types'
-import { providers } from './providers'
+import { type InstallCommand, installCommand, providers } from './providers'
 
 export const isSessionId = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f-]{36}$/i.test(s)
 
@@ -72,3 +72,11 @@ export function checkSharedToggle(id: unknown, enabled: unknown, accounts: Accou
   if (a.provider !== 'claude') throw new Error('Memoria compartida: solo cuentas Claude')
   return a
 }
+
+/** Installer request: only a provider id; the command itself is chosen by main. */
+export function checkInstall(provider: unknown): InstallCommand {
+  const c = installCommand(provider)
+  if (!c) throw new Error('No hay instalador oficial para este proveedor')
+  return c
+}
+

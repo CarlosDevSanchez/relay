@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { diffCounts, dur, relPath, toolHead } from '../src/renderer/Conversation'
+import { diffCounts, dur, pendingTool, relPath, toolHead } from '../src/renderer/Conversation'
 import { Markdown, highlight } from '../src/renderer/md'
 
 describe('conversation helpers', () => {
@@ -43,5 +43,12 @@ describe('conversation helpers', () => {
     expect(t('Glob', { pattern: '*.ts' }, { result: 'a\nb' }).note).toBe('2 archivos')
     expect(t('Agent', { description: 'D' }).target).toBe('D')
     expect(t('Mystery', {}).target).toBe('')
+  })
+  it('the pending tool for the activity line is the newest tool without a result', () => {
+    const tool = (id: string, name: string, input: unknown, status: 'pending' | 'ok') => ({ id, at: 0, kind: 'tool' as const, name, input, status })
+    expect(pendingTool([])).toBeNull()
+    expect(pendingTool([tool('1', 'Bash', { command: 'ls' }, 'ok')])).toBeNull()
+    expect(pendingTool([tool('1', 'Bash', { command: 'ls' }, 'ok'), tool('2', 'Bash', { command: 'bun test\nmore' }, 'pending')])).toBe('Bash · bun test')
+    expect(pendingTool([tool('1', 'Mystery', {}, 'pending')])).toBe('Mystery')
   })
 })

@@ -12,7 +12,7 @@ import { buildCatalog } from './catalog'
 import { detectCli } from './cli'
 import { mcpReport } from './mcp'
 import { copySessionForHandoff, runHandoff, sourceExists } from './handoff'
-import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty } from './pty'
+import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty, sendPty, stopPty, clearPty } from './pty'
 import { providers } from './providers'
 import { type LimitInfo, scheduleAt, pickRebind, watchLimits, watchNewSession } from './limit'
 import { candidateDirs, canProbe, claudeProjectDir, dirProvider, isDefaultInstall } from './paths'
@@ -23,7 +23,7 @@ import { drifted, linkAccount, nextFlag, sharedDir, unlinkAccount } from './shar
 import { listSessions } from './sessions'
 import { accountStatus } from './usage'
 import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount, setSharedMemory } from './store'
-import { checkAccountId, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart, checkAgentId, checkOffset, checkTranscriptRef } from './validate'
+import { checkAccountId, checkClaudePty, checkClear, checkPtyId, checkSendText, checkSeq, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart, checkAgentId, checkOffset, checkTranscriptRef } from './validate'
 
 const HOME = process.env.RELAY_HOME || join(homedir(), '.relay')
 let win: BrowserWindow
@@ -72,8 +72,8 @@ const record = (fn: Parameters<typeof updateRegistry>[1]): void => {
   }
 }
 const touched = new Map<number, number>()
-const ptyData = (id: number, d: string): void => {
-  send('pty:data', id, d)
+const ptyData = (id: number, d: string, seq: number): void => {
+  send('pty:data', id, d, seq)
   const sid = ptyInfo(id)?.sessionId
   if (sid && Date.now() - (touched.get(id) ?? 0) > 60_000) {
     touched.set(id, Date.now()) // history: "last active", at most once a minute per pty
@@ -342,6 +342,15 @@ function handle(): void {
   })
   ipcMain.handle('pty:kill', (_e, id: number) => killPty(id))
   ipcMain.on('pty:write', (_e, id: number, d: string) => writePty(id, d))
+  // composer bridge (F6.3): the renderer sends ids and text; the bytes are built in bridge.ts
+  const claudePty = (id: unknown): number => {
+    const n = checkPtyId(id)
+    checkClaudePty(ptyInfo(n), loadAccounts(HOME))
+    return n
+  }
+  ipcMain.handle('pty:send', (_e, id: unknown, text: unknown, seq: unknown) => sendPty(claudePty(id), checkSendText(text), checkSeq(seq)))
+  ipcMain.handle('pty:stop', (_e, id: unknown) => stopPty(claudePty(id)))
+  ipcMain.handle('pty:clear', (_e, id: unknown, opts: unknown, seq: unknown) => clearPty(claudePty(id), checkClear(opts), checkSeq(seq)))
   ipcMain.on('pty:resize', (_e, id: number, c: number, r: number) => resizePty(id, c, r))
   ipcMain.handle('handoff', (_e, req: HandoffRequest) => {
     const [from, to] = checkHandoff(req, loadAccounts(HOME), loadProjects(HOME))

@@ -1,6 +1,7 @@
 import { realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { type Account, CROSS_PROVIDER, type HandoffRequest, type StartRequest } from '../shared/types'
+import { MAX_SEND } from './bridge'
 import { type InstallCommand, installCommand, providers } from './providers'
 
 export const isSessionId = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
@@ -106,4 +107,33 @@ export function checkAgentId(v: unknown): string {
 export function checkOffset(v: unknown): number {
   if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) throw new Error('Invalid offset')
   return v
+}
+
+export function checkPtyId(v: unknown): number {
+  if (!Number.isInteger(v)) throw new Error('Invalid pty id')
+  return v as number
+}
+
+/** Composer text: a string of 1..MAX_SEND chars without NUL (control characters are stripped in main when the bytes are built). */
+export function checkSendText(v: unknown): string {
+  if (typeof v !== 'string' || !v || v.length > MAX_SEND || v.includes('\0')) throw new Error('Invalid message')
+  return v
+}
+
+/** `pty:clear` options: only whether a `/` or `@` list is open; the bytes come from a fixed allowlist in main. */
+export function checkClear(v: unknown): boolean {
+  const o = (v ?? {}) as Record<string, unknown>
+  if (typeof o.overlay !== 'boolean') throw new Error('Invalid clear options')
+  return o.overlay
+}
+
+/** Output sequence the renderer last parsed (see pty.ts). */
+export function checkSeq(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) throw new Error('Invalid seq')
+  return v
+}
+
+/** The composer bridge only reaches a live pty of a Claude account that has a session (never a login / installer pty, never Codex). */
+export function checkClaudePty(info: { accountId: string; sessionId: string | undefined } | undefined, accounts: Account[]): void {
+  if (!info?.sessionId || accounts.find((a) => a.id === info.accountId)?.provider !== 'claude') throw new Error('La sesión ya no está activa')
 }

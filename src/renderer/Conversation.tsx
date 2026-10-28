@@ -1,6 +1,6 @@
 import { type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { applyBatch, createFeed, emptyTState, isPendingAsk, type TState } from '../shared/transcript'
-import type { TDiff, TEvent, TranscriptRef } from '../shared/types'
+import type { TDiff, TEvent, TMeta, TranscriptRef } from '../shared/types'
 import { CopyButton, Markdown } from './md'
 
 type Tool = Extract<TEvent, { kind: 'tool' }>
@@ -127,7 +127,7 @@ function ToolCard({ e, r }: { e: Tool; r: TranscriptRef }) {
     <details
       data-testid="tool-card"
       data-tool={e.name}
-      className={`collapse collapse-arrow overflow-clip rounded-box border bg-base-100 text-xs ${e.status === 'error' ? 'border-error/50' : ask ? 'border-warning' : 'border-base-300'}`}
+      className={`collapse collapse-arrow overflow-clip rounded-xl border bg-base-200 text-xs ${e.status === 'error' ? 'border-error/50' : ask ? 'border-warning' : 'border-base-300'}`}
       {...(edit || e.status === 'error' || ask ? { open: true } : {})}
       onToggle={(ev) => ev.currentTarget.open && setLoadAgent(true)}
     >
@@ -227,7 +227,15 @@ const Item = memo(function Item({ e, r, fresh }: { e: TEvent; r: TranscriptRef; 
 })
 
 // ---- view ----
-export function ConversationView({ r: ref }: { r: TranscriptRef }) {
+/** The newest tool still waiting for its result ("Bash · bun test"), for the activity line. */
+export function pendingTool(events: TEvent[]): string | null {
+  const e = events.findLast((x): x is Tool => x.kind === 'tool' && x.status === 'pending')
+  if (!e) return null
+  const t = toolHead(e).target
+  return (t ? `${e.name} · ${t}` : e.name).slice(0, 80)
+}
+
+export function ConversationView({ r: ref, onTool, onMeta }: { r: TranscriptRef; onTool?: (label: string | null) => void; onMeta?: (m: TMeta) => void }) {
   const r = useMemo(() => ref, [ref.accountId, ref.cwd, ref.sessionId]) // stable identity: Item's memo needs it
   const [st, setSt] = useState<TState>(emptyTState)
   const feed = useRef<ReturnType<typeof createFeed>>(null)
@@ -242,6 +250,8 @@ export function ConversationView({ r: ref }: { r: TranscriptRef }) {
     feed.current = f
     return () => f.stop()
   }, [r.accountId, r.cwd, r.sessionId])
+  useEffect(() => onTool?.(pendingTool(st.events)), [st.events])
+  useEffect(() => onMeta?.(st.meta), [st.meta])
   if (seen.current === null && st.seq >= 0) seen.current = st.events.at(-1)?.at ?? -1
   useLayoutEffect(() => {
     const el = box.current!
@@ -281,7 +291,7 @@ export function ConversationView({ r: ref }: { r: TranscriptRef }) {
       >
         <div ref={inner} className="mx-auto flex max-w-3xl flex-col gap-3 text-sm">
           {st.older != null && <button className="btn btn-ghost btn-xs self-center" onClick={older}>Cargar anteriores</button>}
-          {st.seq >= 0 && st.events.length === 0 && <p className="py-8 text-center opacity-60">Aún no hay mensajes. Escribe en la terminal para empezar.</p>}
+          {st.seq >= 0 && st.events.length === 0 && <p className="py-8 text-center opacity-60">Aún no hay mensajes. Escribe el primero abajo.</p>}
           {st.events.map((e) => <Item key={e.id} e={e} r={r} fresh={seen.current !== null && e.at > seen.current} />)}
         </div>
       </div>

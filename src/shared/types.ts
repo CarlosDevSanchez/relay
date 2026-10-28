@@ -249,7 +249,14 @@ export interface RelayApi {
     kill(ptyId: number): Promise<void>
     write(ptyId: number, data: string): void
     resize(ptyId: number, cols: number, rows: number): void
-    onData(cb: (ptyId: number, data: string) => void): () => void
+    /** composer (F6.3): main wraps the sanitized text in a bracketed paste + Enter; `seq` = last output chunk parsed by the renderer, 'stale' = more output arrived since (nothing written) */
+    send(ptyId: number, text: string, seq: number): Promise<'ok' | 'stale' | 'gone'>
+    /** Stop: main writes exactly one ESC */
+    stop(ptyId: number): Promise<boolean>
+    /** empties the CLI's input box (fixed allowlist in main: `\x15`, preceded by ESC when a `/` or `@` list is open) */
+    clear(ptyId: number, opts: { overlay: boolean }, seq: number): Promise<'ok' | 'stale' | 'gone'>
+    /** `seq` numbers the output chunks of a pty (the composer bridge's stale-frame guard) */
+    onData(cb: (ptyId: number, data: string, seq: number) => void): () => void
     onExit(cb: (ptyId: number, code: number) => void): () => void
   }
   handoff(req: HandoffRequest): Promise<StartResult>

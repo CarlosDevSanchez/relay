@@ -39,16 +39,11 @@ script() {
   sed "s/__SID__/$1/g" "$STUB_AGENT" > "$d/$1/subagents/agent-a1b2c3d4e5f60718.jsonl"
   while IFS= read -r l; do printf '%s\\n' "$l" | sed "s/__SID__/$1/g" >> "$d/$1.jsonl"; sleep "\${STUB_GAP:-0.4}"; done < "$STUB_SCRIPT"
 }
-# with STUB_KEYS set the session logs every line typed into its pty and its size on start and on every resize (SIGWINCH)
-keys() {
-  trap 'echo "SIZE:$(stty size)" >> "$STUB_KEYS"' WINCH
-  echo "SIZE:$(stty size)" >> "$STUB_KEYS"
-  for i in $(seq 120); do read -t 1 -r l && echo "KEY:$l" >> "$STUB_KEYS"; done
-}
 case "$1 $2" in
   "auth status") [ -n "$CLAUDE_CONFIG_DIR" ] && touch "$CLAUDE_CONFIG_DIR/.claude.json"; echo "{\\"loggedIn\\":true,\\"email\\":\\"\${STUB_EMAIL:-test@example.com}\\",\\"subscriptionType\\":\\"max\\"}" ;;
   "auth login") sleep 1; echo "Paste code here"; read -t 20 -r code; echo "CODE:$code" >> "${log}"; exit 0 ;;
-  "--session-id "*|"--resume "*) [ -n "$STUB_SCRIPT" ] && script "$2" & sleep 1; echo "Claude Code (stub): sesión interactiva"; if [ -n "$STUB_KEYS" ]; then keys; else session; fi ;;
+  # the session is a fake TUI (e2e/fake-claude-tui.mjs, F6.3); the status line loop runs beside it unless STUB_KEYS logs the pty
+  "--session-id "*|"--resume "*) [ -n "$STUB_SCRIPT" ] && script "$2" & sleep 1; [ -z "$STUB_KEYS" ] && session & "$STUB_NODE" "$STUB_TUI" "$2" ;;
   *) echo "2.1.0 (Claude Code)" ;;
 esac
 `
@@ -78,7 +73,7 @@ const setup = (name) => {
   return dirs
 }
 const launch = (d, extra = {}) => {
-  const env = { ...process.env, RELAY_HOME: d.relayHome, HOME: d.home, PATH: `${d.bin}:/usr/bin:/bin`, ...extra }
+  const env = { ...process.env, RELAY_HOME: d.relayHome, HOME: d.home, PATH: `${d.bin}:/usr/bin:/bin`, STUB_NODE: process.execPath, STUB_TUI: join(root, 'e2e/fake-claude-tui.mjs'), ...extra }
   delete env.ELECTRON_RUN_AS_NODE
   return electron.launch({ args: [root, `--user-data-dir=${join(d.home, 'userdata')}`], env }) // own Chromium profile: localStorage (sidebar UI state) never leaks between scenarios or into a real app profile
 }
@@ -786,7 +781,7 @@ const mainOverflow = (page, withTab) =>
   }
 }
 
-// ---- scenario 9: conversation view (F6.2): a scripted transcript is written live by the stub; cards, diffs, inert markdown, split layout, toggle, scrolling, fits, light/dark shots ----
+// ---- scenario 9: conversation view (F6.2): a scripted transcript is written live by the stub; cards, diffs, inert markdown, chat-first layout, Chat/Terminal toggle, scrolling, fits, light/dark shots ----
 {
   const d = setup('nine')
   copyFileSync(stub, join(d.bin, 'claude'))
@@ -854,15 +849,15 @@ const mainOverflow = (page, withTab) =>
     await chat.getByText('Crea una función suma y pruébala.').waitFor({ timeout: t })
     // live: the first message shows up before the later blocks are written
     assert.equal(await cards.filter({ hasText: 'suma.ts' }).count(), 0, 'the Edit card does not exist yet when the first message appears')
-    // split layout: chat left, terminal right, both visible
+    // chat-first: the chat covers the terminal's box; the terminal is mounted but not visible
     const term = page.getByTestId('terminal-pane')
-    await term.locator('.xterm').waitFor({ timeout: t })
+    await term.locator('.xterm').waitFor({ state: 'attached', timeout: t })
     const [cb, tb] = await Promise.all([chat.boundingBox(), term.boundingBox()])
-    assert.ok(cb && tb && cb.x < tb.x && cb.width > 200 && tb.width > 200, 'chat on the left, terminal on the right')
-
-    // the terminal takes keystrokes in Dividida: what is typed reaches the pty
+    assert.ok(cb && tb && cb.width > 400 && Math.abs(cb.width - tb.width) < 1 && Math.abs(cb.height - tb.height) < 1, 'the chat takes the whole session area, same box as the terminal')
+    assert.equal(await term.locator('.xterm').isVisible(), false, 'the terminal is hidden in chat view')
     const keys = () => (existsSync(join(tmp, 'chat-keys.log')) ? readFileSync(join(tmp, 'chat-keys.log'), 'utf8').split('\n') : [])
     const sizes = () => keys().filter((l) => l.startsWith('SIZE:')).map((l) => Number(l.split(' ')[1]))
+    const bytes = () => keys().filter((l) => l.startsWith('BYTES:')).map((l) => JSON.parse(l.slice(6))).join('')
     const poll = async (fn, what) => {
       for (let i = 0; i < 50; i++) {
         if (fn()) return
@@ -871,11 +866,7 @@ const mainOverflow = (page, withTab) =>
       assert.fail(`timeout: ${what}`)
     }
     await poll(() => sizes().length, 'the stub reported its pty size')
-    await term.locator('.xterm').click()
-    await page.keyboard.type('hola-marker')
-    await page.keyboard.press('Enter')
-    await poll(() => keys().includes('KEY:hola-marker'), 'the typed marker reached the pty')
-    const colsSplit = sizes().at(-1)
+    const colsChat = sizes().at(-1)
 
     await chat.getByText('Pensó 4 s').waitFor({ timeout: t })
     await chat.getByText('Voy a crear la función y probarla.').waitFor({ timeout: t })
@@ -948,18 +939,19 @@ const mainOverflow = (page, withTab) =>
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
     await page.waitForTimeout(500)
 
-    // toggle: Terminal only (chat gone, terminal wider), Dividida again (chat back with its content)
-    const wSplit = (await term.boundingBox()).width
+    // Terminal view: same pty size (the terminal was never display:none), keystrokes reach the pty; back to Chat keeps the content
     await page.getByRole('button', { name: 'Terminal', exact: true }).click()
-    await chat.waitFor({ state: 'detached', timeout: t })
-    assert.ok((await term.boundingBox()).width > wSplit + 100, 'the terminal takes the whole area')
-    await poll(() => sizes().at(-1) > colsSplit, 'the pty was resized wider in Terminal mode')
-    const colsFull = sizes().at(-1)
-    await page.getByRole('button', { name: 'Dividida', exact: true }).click()
+    await chat.waitFor({ state: 'hidden', timeout: t })
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await term.locator('.xterm').click()
+    await page.keyboard.type('hola-marker')
+    await page.keyboard.press('Enter')
+    await poll(() => bytes().includes('hola-marker\r'), 'the typed marker reached the pty')
+    assert.equal(sizes().at(-1), colsChat, 'the pty size did not change with the view')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
     await chat.getByText('Crea una función suma y pruébala.').waitFor({ timeout: t })
     await chat.getByText(/Conversación compactada/).waitFor({ timeout: t })
-    assert.ok((await term.locator('.xterm').boundingBox()).width > 200, 'the terminal stays visible in Dividida')
-    await poll(() => sizes().at(-1) < colsFull, 'the pty was resized narrower again in Dividida')
+    assert.equal(await term.locator('.xterm').isVisible(), false, 'the terminal is hidden again')
 
     // light / dark shots (the OS theme drives relay-light / relay-dark)
     for (const scheme of ['light', 'dark']) {
@@ -974,6 +966,226 @@ const mainOverflow = (page, withTab) =>
       await page.screenshot({ path: join(shots, `chat-${scheme}.png`) })
     }
     await page.emulateMedia({ colorScheme: null })
+    assert.ok(!existsSync(join(d.home, '.claude')), 'nothing written outside the temp HOME')
+  } finally {
+    await app.close()
+  }
+}
+// ---- scenario 10: chat-first core (F6.3): hidden-but-live terminal, composer bridge bytes, Stop, clear confirmation, dialog/unknown fallback, fits, shots ----
+{
+  const d = setup('ten')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  const proj = join(d.home, 'chat-first')
+  mkdirSync(proj)
+  const cwd = realpathSync(proj)
+  const cfg = join(d.home, 'cfg-first')
+  mkdirSync(cfg)
+  writeFileSync(join(cfg, '.claude.json'), '{}')
+  mkdirSync(d.relayHome, { recursive: true })
+  writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([cwd]))
+  writeFileSync(join(d.relayHome, 'accounts.json'), JSON.stringify([{ id: 'dddddddd', label: 'Personal CarlosDev con una etiqueta de cuenta muy larga', provider: 'claude', configDir: cfg }]))
+  const klog = join(tmp, 'first-keys.log')
+  const ctl = join(tmp, 'first-ctl')
+  writeFileSync(ctl, '')
+  const app = await launch(d, { STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-'), STUB_THINK: '7000' })
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.getByTestId('account-card').first().waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    const chat = page.getByTestId('chat-pane')
+    const term = page.getByTestId('terminal-pane')
+    const composer = page.getByTestId('composer')
+    const send = page.getByRole('button', { name: 'Enviar', exact: true })
+    const lines = () => (existsSync(klog) ? readFileSync(klog, 'utf8').split('\n') : [])
+    const sizes = () => lines().filter((l) => l.startsWith('SIZE:')).map((l) => Number(l.split(' ')[1]))
+    const bytes = () => lines().filter((l) => l.startsWith('BYTES:')).map((l) => JSON.parse(l.slice(6))).join('')
+    const poll = async (fn, what) => {
+      for (let i = 0; i < 60; i++) {
+        if (await fn()) return
+        await new Promise((r) => setTimeout(r, 200))
+      }
+      assert.fail(`timeout: ${what}`)
+    }
+    const state = (s) => page.waitForFunction((x) => document.querySelector('[data-testid=activity]')?.dataset.state === x, s, { timeout: t })
+    const PS = '\x1b[200~'
+    const PE = '\x1b[201~'
+
+    // chat is the default view; the terminal is mounted, hidden, and the screen is classified from it
+    await composer.waitFor({ timeout: t })
+    await state('idle')
+    await page.getByTestId('activity').getByText('Listo', { exact: true }).waitFor({ timeout: t })
+    await term.locator('.xterm').waitFor({ state: 'attached', timeout: t })
+    assert.equal(await term.locator('.xterm').isVisible(), false, 'terminal hidden by default')
+    const [cb, tb] = await Promise.all([chat.boundingBox(), term.boundingBox()])
+    assert.ok(cb && tb && Math.abs(cb.width - tb.width) < 1 && Math.abs(cb.height - tb.height) < 1, 'hidden terminal keeps the size of the visible area (not display:none)')
+    await poll(() => sizes().length, 'the stub reported its pty size')
+    await page.waitForTimeout(600)
+    const cols0 = sizes().at(-1)
+    assert.ok(cols0 > 60, `pty is fitted to the area (${cols0} cols)`)
+    assert.equal(bytes(), '', 'nothing reached the pty before the user sent something')
+
+    // send: exactly paste-start + text + paste-end + CR; both messages appear in the chat
+    await composer.fill('hola')
+    await composer.press('Enter')
+    await chat.getByText('Respuesta a: hola').waitFor({ timeout: t })
+    assert.equal(bytes(), `${PS}hola${PE}\r`, 'one bracketed paste + Enter, nothing else')
+    await chat.locator('[data-testid=ev-message]', { hasText: /^hola$/ }).waitFor({ timeout: t })
+    await state('idle')
+    assert.equal(await composer.inputValue(), '', 'the composer is cleared after sending')
+
+    // multi-line (Shift+Enter) arrives intact
+    let m = bytes().length
+    await composer.fill('')
+    await composer.pressSequentially('linea1')
+    await composer.press('Shift+Enter')
+    await composer.pressSequentially('linea2')
+    await composer.press('Enter')
+    await poll(() => bytes().slice(m) === `${PS}linea1\nlinea2${PE}\r`, 'multi-line message arrived intact')
+    await chat.getByText('Respuesta a: linea1').waitFor({ timeout: t })
+    await state('idle')
+
+    // history: ArrowUp recalls the last sent message, ArrowDown returns to the draft
+    await composer.fill('')
+    await composer.press('ArrowUp')
+    assert.equal(await composer.inputValue(), 'linea1\nlinea2')
+    await composer.press('ArrowUp') // moves the caret to the first line of the recalled text; only then does it browse further
+    await composer.press('ArrowUp')
+    assert.equal(await composer.inputValue(), 'hola')
+    await composer.press('ArrowDown')
+    assert.equal(await composer.inputValue(), 'linea1\nlinea2')
+    await composer.press('ArrowDown') // caret to the last line
+    await composer.press('ArrowDown')
+    assert.equal(await composer.inputValue(), '')
+
+    // working: activity line with the pending tool from the transcript + Stop; screenshots in both themes
+    m = bytes().length
+    await composer.fill('trabaja un rato')
+    await composer.press('Enter')
+    await state('working')
+    await page.getByTestId('activity').getByText(/Trabajando… · Bash · bun test/).waitFor({ timeout: t })
+    const stopBtn = page.getByRole('button', { name: 'Parar', exact: true })
+    await stopBtn.waitFor({ timeout: t })
+    for (const scheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme: scheme })
+      await page.waitForTimeout(500)
+      await page.screenshot({ path: join(shots, `chat-first-${scheme}.png`) })
+    }
+    await page.emulateMedia({ colorScheme: null })
+    for (const size of [[1280, 800], [900, 600]]) {
+      await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].setSize(s[0], s[1]), size)
+      await page.waitForTimeout(500)
+      assert.deepEqual(await mainOverflow(page, true), [], `main content overflows in chat-first (${size[0]}px)`)
+      await sidebarFits(page, `chat-first ${size[0]}px`)
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.waitForTimeout(500)
+    // while the CLI works, sending is blocked (a permission dialog may appear any moment): typing is allowed, Enter writes nothing
+    assert.equal(await composer.isDisabled(), false, 'the draft can be typed while working')
+    await composer.fill('mas')
+    await composer.press('Enter')
+    await page.getByTestId('composer-hint').getByText(/Espera a que el CLI termine/).waitFor({ timeout: t })
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), `${PS}trabaja un rato${PE}\r`, 'nothing was sent while working')
+    assert.equal(await composer.inputValue(), 'mas', 'the blocked draft is kept')
+    await composer.fill('')
+    await stopBtn.click()
+    await poll(() => bytes().slice(m) === `${PS}trabaja un rato${PE}\r\x1b`, 'Stop wrote exactly one ESC')
+    await state('idle')
+
+    // hostile text: control bytes and a paste-end injection never reach the pty
+    m = bytes().length
+    await composer.fill('x\x03y\x1b[201~z\x04w')
+    assert.equal(await composer.inputValue(), 'x\x03y\x1b[201~z\x04w', 'the control characters really are in the textarea before sending')
+    await composer.press('Enter')
+    await poll(() => bytes().slice(m) === `${PS}xy[201~zw${PE}\r`, 'hostile text was stripped in main')
+    assert.ok(!/[\x03\x04\x1a]/.test(bytes()), 'no ^C / ^D / ^Z ever reached the pty')
+    await chat.getByText('Respuesta a: xy[201~zw').waitFor({ timeout: t }) // the turn this send started has finished (an idle frame from before the send must not count)
+    await state('idle')
+
+    // a non-empty CLI box (typed in the terminal): the composer asks before clearing; Cancel writes nothing
+    await page.getByRole('button', { name: 'Terminal', exact: true }).click()
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await term.locator('.xterm').click()
+    await page.keyboard.type('abc')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await state('input-pending')
+    await page.getByTestId('composer-hint').getByText(/no está vacía/).waitFor({ timeout: t })
+    m = bytes().length
+    await composer.fill('tras-limpiar')
+    await composer.press('Enter')
+    const dlg = page.getByRole('dialog', { name: 'Vaciar la entrada del CLI' })
+    await dlg.waitFor({ timeout: t })
+    assert.equal(await dlg.getByRole('button', { name: 'Cancelar' }).evaluate((el) => el === document.activeElement), true, 'the safe button has the focus')
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'nothing is written while the confirmation is open')
+    await dlg.getByRole('button', { name: 'Cancelar' }).click()
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'cancelling writes nothing')
+    await composer.press('Enter')
+    await dlg.waitFor({ timeout: t })
+    await dlg.getByRole('button', { name: 'Vaciar y enviar' }).click()
+    await poll(() => bytes().slice(m) === `\x15${PS}tras-limpiar${PE}\r`, 'confirmed: ^U then the message')
+    await state('working')
+    await state('idle')
+
+    // an open `/` list: ESC then ^U, only after confirming
+    await page.getByRole('button', { name: 'Terminal', exact: true }).click()
+    await term.locator('.xterm').click()
+    await page.keyboard.type('/')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await state('overlay')
+    m = bytes().length
+    await composer.fill('tras-lista')
+    await composer.press('Enter')
+    await dlg.waitFor({ timeout: t })
+    await page.waitForTimeout(200)
+    assert.equal(bytes().slice(m), '', 'nothing written before confirming')
+    await dlg.getByRole('button', { name: 'Vaciar y enviar' }).click()
+    await poll(() => bytes().slice(m) === `\x1b\x15${PS}tras-lista${PE}\r`, 'confirmed: ESC, ^U, then the message')
+    await state('working')
+    await state('idle')
+
+    // the frame changes around a send (the keydown handler stalls the renderer 500 ms while the stub draws a dialog): nothing reaches the pty (exercises the xterm flush + gate; the main-side seq guard is covered in tests/pty.test.ts)
+    m = bytes().length
+    await composer.fill('carrera')
+    await page.evaluate(() => document.querySelector('[data-testid=composer]').addEventListener('keydown', () => { const e = Date.now() + 500; while (Date.now() < e); }, { once: true, capture: true }))
+    setTimeout(() => writeFileSync(ctl, 'dialog'), 80)
+    await composer.press('Enter')
+    await state('dialog:permission')
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'no byte is written when a dialog appears around the send')
+    assert.equal(await composer.inputValue(), 'carrera', 'the draft is kept')
+    // a dialog on screen: the composer is blocked, nothing is written; until the F6.4 cards exist the terminal opens by itself (once)
+    assert.equal(await composer.isDisabled(), true, 'composer blocked on a dialog')
+    assert.equal(await send.isDisabled(), true)
+    await page.getByTestId('activity').getByText('Esperando tu respuesta').waitFor({ timeout: t })
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await page.getByRole('alert').filter({ hasText: 'espera una respuesta' }).waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await page.waitForTimeout(2200)
+    assert.equal(await chat.isVisible(), true, 'back in the chat the same dialog does not reopen the terminal')
+    await page.getByTestId('cli-notice').getByRole('button', { name: 'Abrir terminal' }).click()
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    assert.equal(bytes().slice(m), '', 'no key is sent for a dialog')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    writeFileSync(ctl, '')
+    await state('idle')
+    assert.equal(await composer.isDisabled(), false)
+    await composer.fill('')
+
+    // an unreadable screen opens the terminal by itself (after ~1.5 s) and says so
+    writeFileSync(ctl, 'unknown')
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await page.getByRole('alert').filter({ hasText: 'Relay no reconoce lo que muestra' }).waitFor({ timeout: t })
+    assert.equal(await chat.isVisible(), false, 'the chat view is replaced by the terminal')
+    assert.equal(bytes().slice(m), '', 'nothing written for an unknown screen')
+    writeFileSync(ctl, '')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await state('idle')
+
+    assert.equal(sizes().at(-1), cols0, 'the pty size never changed while switching views')
     assert.ok(!existsSync(join(d.home, '.claude')), 'nothing written outside the temp HOME')
   } finally {
     await app.close()

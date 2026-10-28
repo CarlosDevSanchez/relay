@@ -420,7 +420,7 @@ export function App() {
             {tabs.map((t) => (
               <div key={t.ptyId} role="presentation" className={`tab shrink-0 gap-2 text-xs ${t.ptyId === cur ? 'tab-active' : 'opacity-70'} ${t.exited ? 'line-through' : ''}`}>
                 <button role="tab" aria-selected={t.ptyId === cur} onClick={() => setCur(t.ptyId)} className="flex items-center gap-2">
-                  {t.accountId && <span className="badge badge-soft badge-sm">{accLabel(t.accountId)}</span>}
+                  {t.accountId && <span className="badge badge-soft badge-sm max-w-28"><span className="truncate">{accLabel(t.accountId)}</span></span>}
                   <span className="max-w-40 truncate">{t.title}</span>
                 </button>
                 <button className="btn btn-ghost btn-xs btn-circle" title="Cerrar pestaña" aria-label={`Cerrar pestaña ${t.title}`} onClick={(e) => (e.stopPropagation(), void closeTab(t))}>✕</button>
@@ -448,10 +448,10 @@ export function App() {
         </header>
         {tab?.accountId && (
           <div className="flex items-center gap-2 border-b border-base-300 bg-base-100 px-3 py-1.5 text-xs">
-            <IconFolder /> <b className="truncate">{tab.cwd ? base(tab.cwd) : tab.login ? 'inicio de sesión' : '—'}</b>
+            <IconFolder /> <b className="truncate" title={tab.cwd}>{tab.cwd ? base(tab.cwd) : tab.login ? 'inicio de sesión' : '—'}</b>
             <span className="opacity-40">·</span>
-            <span className="badge badge-soft badge-primary badge-sm">{accLabel(tab.accountId)}</span>
-            <span className={`badge badge-soft badge-sm gap-1 ${tabStatus(tab).c}`}><Dot tone={tabStatus(tab).tone} />{tabStatus(tab).l}</span>
+            <span className="badge badge-soft badge-primary badge-sm max-w-40 shrink" title={accLabel(tab.accountId)}><span className="truncate">{accLabel(tab.accountId)}</span></span>
+            <span className={`badge badge-soft badge-sm shrink-0 gap-1 ${tabStatus(tab).c}`}><Dot tone={tabStatus(tab).tone} />{tabStatus(tab).l}</span>
             <span className="flex-1" />
             <button className="btn btn-ghost btn-xs" onClick={() => void closeTab(tab)} title="Cierra la pestaña y detiene su proceso">Cerrar pestaña</button>
           </div>
@@ -518,10 +518,10 @@ export function App() {
                 <ul className="menu mt-4 w-full p-0">
                   <li className="menu-title">Sesiones recientes</li>
                   {recent.map(({ p, s }) => (
-                    <li key={`${s.accountId}${s.id}`} className={missing(provOf(s.accountId)) ? 'menu-disabled' : ''}>
-                      <button disabled={missing(provOf(s.accountId))} onClick={() => (setCwd(p), void start('resume', s.accountId, s, p))} className="flex-col items-start gap-0 text-left">
+                    <li key={`${s.accountId}${s.id}`} className={`min-w-0 ${missing(provOf(s.accountId)) ? 'menu-disabled' : ''}`}>
+                      <button title={s.title} disabled={missing(provOf(s.accountId))} onClick={() => (setCwd(p), void start('resume', s.accountId, s, p))} className="w-full min-w-0 grid-flow-row items-start gap-0 text-left">
                         <span className="w-full truncate text-sm">{s.title}</span>
-                        <span className="text-xs opacity-60">{base(p)} · {accLabel(s.accountId)} · {ago(s.mtimeMs)}</span>
+                        <span className="w-full truncate text-xs opacity-60" title={`${base(p)} · ${accLabel(s.accountId)} · ${ago(s.mtimeMs)}`}>{base(p)} · {accLabel(s.accountId)} · {ago(s.mtimeMs)}</span>
                       </button>
                     </li>
                   ))}

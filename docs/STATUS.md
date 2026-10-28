@@ -44,6 +44,8 @@ App de escritorio (Electron + React + daisyUI + xterm + node-pty, con Bun) que e
 | `1a87166` | F4.1 | UI daisyUI, Configuración como modal, login guiado, terminal con tema, auto-continuar, foco seguro en los diálogos |
 | `25b1e55` | F5 | Codex del mismo proveedor: cuentas, login, sesiones (solo hilos `codex-tui`), handoff, límite, `AGENTS.md` compartido; restos de F4.1 |
 | `63fb289` | F5.1 | Barras de consumo oficial (status line), historial solo de Relay, logo conectado |
+| `ab08f7a` | F5.2 | Cards compactas y secciones plegables (+ restos de F5.1) |
+| `5225cbc` | F5.2 fix | Desbordes del sidebar con datos reales de cuentas |
 
 Estado al cierre de F5: 100 tests y e2e con 5 escenarios en verde; auditoría PASS.
 
@@ -52,11 +54,12 @@ Estado al cierre de F5: 100 tests y e2e con 5 escenarios en verde; auditoría PA
   - Card compacta por defecto (punto de estado, nombre, badges de plan y proveedor, dos barras finas 5h/7d con el % y el reinicio en tooltip); clic o chevron la expande (email, filas "Sesión 5h"/"Semana", tokens, notas de memoria compartida). Cuenta limitada o sobre el umbral: punto y barra en warning/error aunque esté compacta.
   - "Cuentas" y "Proyectos" se pliegan (plegado de cuentas = un punto por cuenta con tooltip). Estado en `localStorage` (preferencia de UI, con try/catch). El e2e comprueba que ningún elemento del sidebar se sale de su caja (compacto, expandido, plegado y ventana mínima de 900 px).
   - Restos de la auditoría F5.1: escrituras al registro best-effort, listado filtrado por el registro y títulos en caché (tamaño+mtime), `auth status` solo cuando cambia el estado 100%, el status line del usuario conserva `refreshInterval`/`padding` (se ejecuta con `/bin/sh`), un umbral cruzado con Relay cerrado no se avisa (a propósito), `chmod 0700` del dir de estado, ruta del icono empaquetado, `preview.png` a 1200 px, colores de marca teal `#69C4CF` / navy `#1A262C`.
-  - Siguiente paso: auditoría Opus, correcciones, commit.
+  - Seguimiento (sin commitear): badge de proveedor corto "CC"/"CX" siempre visible (nombre completo en el tooltip); los badges de cuenta en las pestañas y en la franja de la sesión se truncan con elipsis conservando el inicio; las sesiones recientes apilan el título sobre los metadatos; contorno de foco en los kebabs y los puntos; el e2e `mainFits` también comprueba con una pestaña abierta.
+  - NITs abiertos: el select "Cuenta" del estado vacío mete las etiquetas largas bajo su flecha; `min-w-0` en el li/button de la lista de recientes puede no hacer nada.
   - Para la fase de empaquetado: el icono de la ventana empaquetada se busca en `process.resourcesPath/icon.png` (hay que copiarlo allí con `extraResources`); en desarrollo, `<proyecto>/build/icon.png`.
 
 ## 6. Pendiente para cerrar el MVP
-1. F5.1 (`63fb289`) y F5.2 en commit.
+1. F5.1 (`63fb289`) y F5.2 (`ab08f7a`, `5225cbc`) ya están en commit.
 2. **Prueba manual del usuario** desde un worktree fijado al último commit. Puntos clave que solo se pueden comprobar con cuentas reales:
    - Claude: que `claude --resume <id> "<msg>"` continúe solo; que la memoria compartida funcione por symlink (`/memory`, `/skills`, auto-memory en `~/.relay/shared`); que el login guiado y el campo del código funcionen; que las barras de consumo aparezcan.
    - Codex: login interactivo, `codex login status` con sesión iniciada, texto real del 429 y del reinicio, `token_count.rate_limits` real.

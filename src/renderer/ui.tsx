@@ -40,12 +40,12 @@ export function Dropdown({ trigger, items, title, align = 'right', btnClass = 'b
     <div className={`dropdown nodrag ${align === 'right' ? 'dropdown-end' : ''}`}>
       {/* tip = null: native title only (a CSS tooltip is laid out wide even while invisible, which widens its scroll container) */}
       {tip === null ? (
-        <div tabIndex={0} role="button" aria-haspopup="menu" aria-label={title} title={title} className={`${btnClass} gap-1`}>
+        <div tabIndex={0} role="button" aria-haspopup="menu" aria-label={title} title={title} className={`${btnClass} gap-1 focus-visible:outline-2 focus-visible:outline-primary`}>
           {trigger}
         </div>
       ) : (
         <div className={`tooltip ${tip}`} data-tip={title}>
-          <div tabIndex={0} role="button" aria-haspopup="menu" aria-label={title} className={`${btnClass} gap-1`}>
+          <div tabIndex={0} role="button" aria-haspopup="menu" aria-label={title} className={`${btnClass} gap-1 focus-visible:outline-2 focus-visible:outline-primary`}>
             {trigger}
           </div>
         </div>

@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import type { Account, AccountStatus, AccountUsage, ProviderId, SessionInfo, UsageWindow } from '../shared/types'
 import { fmtReset, liveWindows, usageLevel, windowTitle } from '../shared/usage'
-import { NAMES, missingMsg } from './status'
+import { BADGE, NAMES, missingMsg } from './status'
 import { Dot, Logo, Dropdown, IconChevron, IconFolder, IconGear, IconKebab, IconLink, IconPlus, ago } from './ui'
 
 const base = (p: string) => p.split('/').filter(Boolean).pop() ?? p
@@ -176,10 +176,10 @@ export function Sidebar(p: SidebarProps) {
           <div className="flex flex-wrap gap-1 px-4 pb-1" data-testid="account-dots">
             {p.accounts.map((a) => {
               const ws = live(a.id)
-              const tip = `${a.label}${ws.length ? ` · ${ws.map((w) => `${w.id} ${Math.round(w.pct)}%`).join(' · ')}` : ''}`
+              const tip = `${a.label} (${NAMES[a.provider]})${ws.length ? ` · ${ws.map((w) => `${w.id} ${Math.round(w.pct)}%`).join(' · ')}` : ''}`
               return (
                 <span key={a.id} title={tip}>
-                  <button className={`btn btn-ghost btn-xs btn-square ${a.id === p.active ? 'ring-1 ring-primary' : ''}`} data-testid="account-dot" aria-label={tip} onClick={() => p.selectAccount(a.id)}>
+                  <button className={`btn btn-ghost btn-xs btn-square focus-visible:outline-2 focus-visible:outline-primary ${a.id === p.active ? 'ring-1 ring-primary' : ''}`} data-testid="account-dot" aria-label={tip} onClick={() => p.selectAccount(a.id)}>
                     <Dot tone={toneOf(p.statuses[a.id], ws, p.warnAt)} />
                   </button>
                 </span>
@@ -199,9 +199,9 @@ export function Sidebar(p: SidebarProps) {
                   <div className="card-body gap-1.5 p-2.5 @container">
                     <div className="flex items-center gap-1.5">
                       <Dot tone={toneOf(s, ws, p.warnAt)} />
-                      <button title={a.label} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-primary" onClick={(e) => (e.stopPropagation(), p.selectAccount(a.id))}>{a.label}</button>
+                      <button title={`${a.label} · ${NAMES[a.provider]}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-primary" onClick={(e) => (e.stopPropagation(), p.selectAccount(a.id))}>{a.label}</button>
                       {s?.plan && <span className="badge badge-soft badge-primary badge-xs shrink-0 uppercase">{s.plan}</span>}
-                      <span className="badge badge-ghost badge-xs hidden shrink-0 capitalize @[17rem]:inline-flex" data-testid="provider-badge">{a.provider}</span>
+                      <span className={`badge badge-soft badge-xs shrink-0 font-mono ${BADGE[a.provider].cls}`} data-testid="provider-badge" data-provider={a.provider} title={NAMES[a.provider]} aria-label={NAMES[a.provider]}>{BADGE[a.provider].tag}</span>
                       <span className="shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
                         <Dropdown
                           title="Opciones de cuenta"
@@ -257,7 +257,7 @@ export function Sidebar(p: SidebarProps) {
           <div className="flex flex-wrap gap-1 px-4 pb-1" data-testid="project-dots">
             {p.projects.map((x) => (
               <span key={x} title={base(x)}>
-                <button className={`btn btn-ghost btn-xs btn-square ${x === p.cwd ? 'ring-1 ring-primary' : ''}`} aria-label={base(x)} onClick={() => p.selectProject(x)}>
+                <button className={`btn btn-ghost btn-xs btn-square focus-visible:outline-2 focus-visible:outline-primary ${x === p.cwd ? 'ring-1 ring-primary' : ''}`} aria-label={base(x)} onClick={() => p.selectProject(x)}>
                   <span aria-hidden="true" className={`status ${x === p.cwd ? 'status-primary' : 'status-neutral'}`} />
                 </button>
               </span>

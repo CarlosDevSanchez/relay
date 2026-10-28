@@ -343,7 +343,9 @@ const sidebarFits = async (page, state) => {
     page.on('pageerror', (e) => console.error('pageerror', e.message))
     const cards = page.getByTestId('account-card')
     await cards.nth(2).waitFor({ timeout: t })
-    assert.equal(await cards.getByTestId('provider-badge').filter({ hasText: 'codex' }).count(), 2, 'Codex accounts show a provider badge')
+    assert.equal(await cards.locator('[data-testid=provider-badge][data-provider=codex]:visible').count(), 2, 'Codex accounts show a visible provider badge')
+    assert.equal(await cards.locator('[data-testid=provider-badge][data-provider=claude]:visible').count(), 1, 'Claude accounts show a visible provider badge')
+    assert.equal(await cards.getByTestId('provider-badge').first().getAttribute('title'), 'Claude Code')
     await cards.filter({ hasText: 'Cx1' }).getByTestId('card-status').getByText('sesión iniciada').waitFor({ timeout: t }) // `codex login status` exit 0
     await page.getByRole('button', { name: 'hola codex' }).first().waitFor({ timeout: t }) // session listed from the rollout (title = first user message)
     await page.screenshot({ path: join(shots, 'codex.png') })
@@ -677,7 +679,7 @@ const sidebarFits = async (page, state) => {
   writeFileSync(
     join(d.relayHome, 'accounts.json'),
     JSON.stringify([
-      { id: 'p1p1p1p1', label: 'Personal CarlosDev', provider: 'claude', configDir: personal, sharedMemory: true },
+      { id: 'p1p1p1p1', label: 'Personal CarlosDev con una etiqueta de cuenta muy larga', provider: 'claude', configDir: personal, sharedMemory: true },
       { id: 'm1m1m1m1', label: 'Mailo', provider: 'claude', configDir: mailo, sharedMemory: false },
       { id: 'c1c1c1c1', label: 'Codex', provider: 'codex', configDir: codexDir, sharedMemory: true }
     ])
@@ -693,7 +695,11 @@ const sidebarFits = async (page, state) => {
     JSON.stringify({ type: 'user', message: { role: 'user', content: title } }) + '\n' +
       JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), isApiErrorMessage: true, error: 'rate_limit', apiErrorStatus: 429, message: { model: '<synthetic>', content: [{ type: 'text', text: "You've hit your session limit · resets 1:10am (America/Bogota)" }] } }) + '\n'
   )
-  writeFileSync(join(d.relayHome, 'sessions.json'), JSON.stringify([{ provider: 'claude', accountId: 'p1p1p1p1', sessionId: SID, cwd, createdAt: Date.now(), lastActiveAt: Date.now(), origin: 'new', handoffs: [{ from: 'm1m1m1m1', to: 'p1p1p1p1', at: Date.now() }] }]))
+  // a second session whose title is one unbroken 160 char token (main caps titles at 120): must truncate in the sidebar and in the main empty state
+  const SID2 = '0e0e0e0e-aaaa-bbbb-cccc-333333333333'
+  const LONG = 'x'.repeat(160)
+  writeFileSync(join(personal, 'projects', enc, `${SID2}.jsonl`), JSON.stringify({ type: 'user', message: { role: 'user', content: LONG } }) + '\n')
+  writeFileSync(join(d.relayHome, 'sessions.json'), JSON.stringify([{ provider: 'claude', accountId: 'p1p1p1p1', sessionId: SID2, cwd, createdAt: Date.now(), lastActiveAt: Date.now(), origin: 'new', handoffs: [] }, { provider: 'claude', accountId: 'p1p1p1p1', sessionId: SID, cwd, createdAt: Date.now(), lastActiveAt: Date.now(), origin: 'new', handoffs: [{ from: 'm1m1m1m1', to: 'p1p1p1p1', at: Date.now() }] }]))
   const app = await launch(d, { STUB_EMAIL: 'relay-user+long@example.com' })
   try {
     const page = await app.firstWindow()
@@ -704,9 +710,46 @@ const sidebarFits = async (page, state) => {
     await side.getByRole('button', { name: /Refactoriza el módulo/ }).waitFor({ timeout: t })
     await page.getByTestId('card-status').filter({ hasText: /Limitada hasta/ }).waitFor({ timeout: t })
     await cards.first().getByText('sin comprobar').or(cards.nth(1).getByText('sin comprobar')).first().waitFor({ timeout: t })
+    const mainFits = async (size, withTab) => {
+      const what = withTab ? 'tab open' : 'empty state'
+      await (withTab ? page.getByRole('tab').first() : page.getByRole('button', { name: /^x{100}/ }).last()).waitFor({ timeout: t })
+      const bad = await page.evaluate((withTab) => {
+        const m = document.querySelector('main')
+        const out = []
+        if (m.scrollWidth > m.clientWidth) out.push(`main scrollWidth ${m.scrollWidth} > ${m.clientWidth}`)
+        const mr = m.getBoundingClientRect()
+        const isBox = (el) => /flex|grid/.test(getComputedStyle(el).display)
+        for (const el of m.querySelectorAll('*')) {
+          if (getComputedStyle(el).visibility === 'hidden' || !el.clientWidth) continue
+          const r = el.getBoundingClientRect()
+          if (r.right > mr.right + 0.5) out.push(`${el.tagName} right ${Math.round(r.right)} > ${Math.round(mr.right)}`)
+          if (el.closest('.xterm') || el.tagName === 'SELECT' || el.classList.contains('tab')) continue // exempt: xterm's own scrolling viewport; native <select> (scrollWidth = option width); daisyUI .tab (tabs-lift corner pseudo-elements stick out ~8px, children are still checked against main's box)
+          const cs = getComputedStyle(el)
+          if (el.scrollWidth > el.clientWidth + 1 && (cs.textOverflow !== 'ellipsis' || isBox(el))) out.push(`overflow ${el.tagName}.${String(el.className).slice(0, 40)} ${el.scrollWidth}>${el.clientWidth}`)
+        }
+        // account-label badges: the text keeps its start and ends in a real ellipsis
+        const badges = m.querySelectorAll('.badge.max-w-28, .badge.max-w-40')
+        if (withTab && badges.length !== 2) out.push(`expected 2 account-label badges (tab bar + header strip), found ${badges.length}`)
+        for (const b of badges) {
+          const sp = b.querySelector('span.truncate')
+          if (!sp) { out.push(`badge without inner truncate span: ${b.textContent}`); continue }
+          const cs = getComputedStyle(sp), bs = getComputedStyle(b)
+          const inner = b.getBoundingClientRect().left + parseFloat(bs.paddingLeft) + parseFloat(bs.borderLeftWidth)
+          if (cs.textOverflow !== 'ellipsis' || isBox(sp)) out.push(`badge span not ellipsising: ${b.textContent}`)
+          if (sp.getBoundingClientRect().left < inner - 0.5) out.push(`badge text clipped on the left: ${b.textContent}`)
+          if (sp.scrollWidth <= sp.clientWidth) out.push(`badge label not long enough to truncate: ${b.textContent}`)
+        }
+        return out
+      }, !!withTab)
+      assert.deepEqual(bad, [], `main content overflows with an unbroken session title / long label (${size[0]}px, ${what})`)
+    }
     const states = async (size) => {
       await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].setSize(s[0], s[1]), size)
       await page.waitForTimeout(400)
+      await mainFits(size)
+      await page.getByRole('button', { name: /^x{100}/ }).last().click() // open the long-title session in a tab
+      await mainFits(size, true)
+      await page.getByRole('button', { name: 'Cerrar pestaña', exact: true }).last().click()
       await sidebarFits(page, `real data, ${size[0]}px, compact`)
       for (let i = 0; i < 3; i++) if ((await cards.nth(i).getAttribute('data-expanded')) !== 'true') await cards.nth(i).getByTestId('card-toggle').click()
       await page.waitForTimeout(500)

@@ -12,7 +12,7 @@ import { buildCatalog } from './catalog'
 import { detectCli } from './cli'
 import { mcpReport } from './mcp'
 import { copySessionForHandoff, runHandoff, sourceExists } from './handoff'
-import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty, sendPty, stopPty, clearPty } from './pty'
+import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty, sendPty, stopPty, clearPty, answerPty } from './pty'
 import { providers } from './providers'
 import { type LimitInfo, scheduleAt, pickRebind, watchLimits, watchNewSession } from './limit'
 import { candidateDirs, canProbe, claudeProjectDir, dirProvider, isDefaultInstall } from './paths'
@@ -23,7 +23,7 @@ import { drifted, linkAccount, nextFlag, sharedDir, unlinkAccount } from './shar
 import { listSessions } from './sessions'
 import { accountStatus } from './usage'
 import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount, setSharedMemory } from './store'
-import { checkAccountId, checkClaudePty, checkClear, checkPtyId, checkSendText, checkSeq, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart, checkAgentId, checkOffset, checkTranscriptRef } from './validate'
+import { checkAccountId, checkAnswer, checkClaudePty, checkClear, checkPtyId, checkSendText, checkSeq, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart, checkAgentId, checkOffset, checkTranscriptRef } from './validate'
 
 const HOME = process.env.RELAY_HOME || join(homedir(), '.relay')
 let win: BrowserWindow
@@ -351,6 +351,8 @@ function handle(): void {
   ipcMain.handle('pty:send', (_e, id: unknown, text: unknown, seq: unknown) => sendPty(claudePty(id), checkSendText(text), checkSeq(seq)))
   ipcMain.handle('pty:stop', (_e, id: unknown) => stopPty(claudePty(id)))
   ipcMain.handle('pty:clear', (_e, id: unknown, opts: unknown, seq: unknown) => clearPty(claudePty(id), checkClear(opts), checkSeq(seq)))
+  // prompt cards (F6.4): a closed action set; the renderer compares the card's fingerprint with the live screen, main applies the seq guard
+  ipcMain.handle('pty:answer', (_e, id: unknown, seq: unknown, action: unknown) => answerPty(claudePty(id), checkSeq(seq), checkAnswer(action)))
   ipcMain.on('pty:resize', (_e, id: number, c: number, r: number) => resizePty(id, c, r))
   ipcMain.handle('handoff', (_e, req: HandoffRequest) => {
     const [from, to] = checkHandoff(req, loadAccounts(HOME), loadProjects(HOME))

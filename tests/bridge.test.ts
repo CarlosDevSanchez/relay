@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_SEND, STOP, clearSteps, pasteBytes } from '../src/main/bridge'
-import { checkClaudePty, checkClear, checkPtyId, checkSendText, checkSeq } from '../src/main/validate'
+import { MAX_ANSWER, MAX_SEND, STOP, answerSteps, clearSteps, pasteBytes } from '../src/main/bridge'
+import { checkAnswer, checkClaudePty, checkClear, checkPtyId, checkSendText, checkSeq } from '../src/main/validate'
 
 const PS = '\x1b[200~'
 const PE = '\x1b[201~'
@@ -40,6 +40,23 @@ describe('composer bridge bytes (built in main)', () => {
   })
 })
 
+describe('card answer bytes (F6.4)', () => {
+  it('a digit selects, toggles; Tab moves on; ESC cancels', () => {
+    expect(answerSteps({ kind: 'option', n: 2 })).toEqual(['2'])
+    expect(answerSteps({ kind: 'toggle', n: 9 })).toEqual(['9'])
+    expect(answerSteps({ kind: 'next' })).toEqual(['\t'])
+    expect(answerSteps({ kind: 'cancel' })).toEqual(['\x1b'])
+  })
+  it('a text row is the digit alone; then one plain line (no paste markers, no controls) and Enter', () => {
+    expect(answerSteps({ kind: 'text', n: 3 })).toEqual(['3'])
+    expect(answerSteps({ kind: 'line', text: 'Green' })).toEqual(['Green', '\r'])
+    const [line] = answerSteps({ kind: 'line', text: ' a\x1b[201~b\r\nc\x03\u009bd ' })
+    expect(line).toBe('a[201~b cd')
+    expect(line).not.toMatch(/[\x00-\x1f\x7f-\x9f]/)
+    expect(() => answerSteps({ kind: 'line', text: '\x1b\r' })).toThrow()
+  })
+})
+
 describe('IPC input checks', () => {
   it('send text: a non-empty string without NUL, up to the limit', () => {
     expect(checkSendText('hi')).toBe('hi')
@@ -58,6 +75,16 @@ describe('IPC input checks', () => {
   it('seq: a non-negative safe integer', () => {
     expect(checkSeq(0)).toBe(0)
     for (const bad of [-1, 1.5, '1', null, undefined, NaN]) expect(() => checkSeq(bad)).toThrow()
+  })
+  it('answer: the closed action set, digits 1-9, bounded plain text', () => {
+    expect(checkAnswer({ kind: 'option', n: 1 })).toEqual({ kind: 'option', n: 1 })
+    expect(checkAnswer({ kind: 'toggle', n: 9 })).toEqual({ kind: 'toggle', n: 9 })
+    expect(checkAnswer({ kind: 'next', n: 5 })).toEqual({ kind: 'next' })
+    expect(checkAnswer({ kind: 'cancel' })).toEqual({ kind: 'cancel' })
+    expect(checkAnswer({ kind: 'text', n: 3, text: 'hi' })).toEqual({ kind: 'text', n: 3 })
+    expect(checkAnswer({ kind: 'line', text: 'hi', extra: 1 })).toEqual({ kind: 'line', text: 'hi' })
+    for (const bad of [undefined, null, 'cancel', {}, { kind: 'raw', data: '\x03' }, { kind: 'key', key: 'x' }, { kind: 'option', n: 0 }, { kind: 'option', n: 10 }, { kind: 'option', n: 1.5 }, { kind: 'option', n: '1' }, { kind: 'toggle' }, { kind: 'text' }, { kind: 'text', n: 0 }, { kind: 'line' }, { kind: 'line', text: '' }, { kind: 'line', text: 'a\0' }, { kind: 'line', text: 'x'.repeat(MAX_ANSWER + 1) }, { kind: 'line', text: 5 }]) expect(() => checkAnswer(bad)).toThrow()
+    expect(checkAnswer({ kind: 'line', text: 'x'.repeat(MAX_ANSWER) })).toBeTruthy()
   })
   it('composer IPC only reaches a live Claude session pty', () => {
     const acc = [{ id: 'a', label: 'A', provider: 'claude', configDir: '/x' }, { id: 'c', label: 'C', provider: 'codex', configDir: '/y' }] as any

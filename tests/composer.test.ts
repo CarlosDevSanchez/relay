@@ -21,6 +21,11 @@ describe('composer rules', () => {
     expect(composerHint('idle')).toBe('')
     for (const s of ['working', 'overlay', 'dialog:permission', 'exited', 'unknown'] as const) expect(composerHint(s)).not.toBe('')
   })
+  it('a dialog with a card points at the card, one without at the terminal', () => {
+    expect(composerHint('dialog:permission')).toBe('Responde a la tarjeta o abre la terminal.')
+    expect(composerHint('dialog:trust')).toMatch(/en la terminal/)
+    expect(composerHint('dialog:unknown')).toMatch(/en la terminal/)
+  })
   it('history browsing clamps at both ends', () => {
     expect(browse(3, 3, -1)).toBe(2)
     expect(browse(3, 0, -1)).toBe(0)

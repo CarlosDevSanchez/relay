@@ -1,7 +1,8 @@
 import { realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { type Account, CROSS_PROVIDER, type HandoffRequest, type StartRequest } from '../shared/types'
-import { MAX_SEND } from './bridge'
+import type { AnswerAction } from '../shared/prompt'
+import { MAX_ANSWER, MAX_SEND } from './bridge'
 import { type InstallCommand, installCommand, providers } from './providers'
 
 export const isSessionId = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
@@ -136,4 +137,16 @@ export function checkSeq(v: unknown): number {
 /** The composer bridge only reaches a live pty of a Claude account that has a session (never a login / installer pty, never Codex). */
 export function checkClaudePty(info: { accountId: string; sessionId: string | undefined } | undefined, accounts: Account[]): void {
   if (!info?.sessionId || accounts.find((a) => a.id === info.accountId)?.provider !== 'claude') throw new Error('La sesión ya no está activa')
+}
+
+/** `pty:answer` action: only the closed set of card actions, digits 1-9, text a single bounded string. */
+export function checkAnswer(v: unknown): AnswerAction {
+  const o = (v ?? {}) as Record<string, unknown>
+  const n = o.n
+  const digit = typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 9
+  if ((o.kind === 'option' || o.kind === 'toggle') && digit) return { kind: o.kind, n }
+  if (o.kind === 'next' || o.kind === 'cancel') return { kind: o.kind }
+  if (o.kind === 'text' && digit) return { kind: 'text', n }
+  if (o.kind === 'line' && typeof o.text === 'string' && o.text.length > 0 && o.text.length <= MAX_ANSWER && !o.text.includes('\0')) return { kind: 'line', text: o.text }
+  throw new Error('Invalid answer')
 }

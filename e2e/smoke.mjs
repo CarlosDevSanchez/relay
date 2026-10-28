@@ -907,7 +907,6 @@ const mainOverflow = (page, withTab) =>
     await chat.getByText(/Conversación compactada · 120k → 8k tokens/).waitFor({ timeout: t })
     await chat.getByText('Turno de 1 min 4 s').waitFor({ timeout: t })
     const q = cards.filter({ hasText: 'AskUserQuestion' }).first()
-    await q.getByText('Esperando tu respuesta en la terminal.').waitFor({ timeout: t })
     await q.getByText('¿Sigo con las pruebas?').first().waitFor({ timeout: t })
 
     // security: nothing from the transcript became markup or a navigation
@@ -1151,16 +1150,29 @@ const mainOverflow = (page, withTab) =>
     m = bytes().length
     await composer.fill('carrera')
     await page.evaluate(() => document.querySelector('[data-testid=composer]').addEventListener('keydown', () => { const e = Date.now() + 500; while (Date.now() < e); }, { once: true, capture: true }))
-    setTimeout(() => writeFileSync(ctl, 'dialog'), 80)
+    setTimeout(() => writeFileSync(ctl, 'permission'), 80)
     await composer.press('Enter')
     await state('dialog:permission')
     await page.waitForTimeout(300)
     assert.equal(bytes().slice(m), '', 'no byte is written when a dialog appears around the send')
     assert.equal(await composer.inputValue(), 'carrera', 'the draft is kept')
-    // a dialog on screen: the composer is blocked, nothing is written; until the F6.4 cards exist the terminal opens by itself (once)
+    // a permission dialog has a card (F6.4): the composer is blocked with the card hint, nothing is written without a click, the terminal does NOT open by itself
     assert.equal(await composer.isDisabled(), true, 'composer blocked on a dialog')
     assert.equal(await send.isDisabled(), true)
     await page.getByTestId('activity').getByText('Esperando tu respuesta').waitFor({ timeout: t })
+    await page.getByTestId('composer-hint').getByText('Responde a la tarjeta o abre la terminal.').waitFor({ timeout: t })
+    await page.getByTestId('prompt-card').waitFor({ timeout: t })
+    await page.waitForTimeout(2200)
+    assert.equal(await chat.isVisible(), true, 'a card keeps the chat open (no terminal auto-open)')
+    assert.equal(await term.locator('.xterm').isVisible(), false)
+    assert.equal(bytes().slice(m), '', 'no key is sent without a click')
+    writeFileSync(ctl, '')
+    await state('idle')
+    assert.equal(await composer.isDisabled(), false)
+    await composer.fill('')
+
+    // a dialog without a card (folder trust) keeps the F6.3 behaviour: the terminal opens by itself (once), nothing is written
+    writeFileSync(ctl, 'trust')
     await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
     await page.getByRole('alert').filter({ hasText: 'espera una respuesta' }).waitFor({ timeout: t })
     await page.getByRole('button', { name: 'Chat', exact: true }).click()
@@ -1186,6 +1198,306 @@ const mainOverflow = (page, withTab) =>
     await state('idle')
 
     assert.equal(sizes().at(-1), cols0, 'the pty size never changed while switching views')
+    assert.ok(!existsSync(join(d.home, '.claude')), 'nothing written outside the temp HOME')
+  } finally {
+    await app.close()
+  }
+}
+// ---- scenario 11: prompt cards (F6.4): permission / question / multi-select / review / plan cards, exact keys, fingerprint guard, one shot, answered in the terminal, no-card dialogs, fits, shots ----
+{
+  const d = setup('eleven')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  const proj = join(d.home, 'cards')
+  mkdirSync(proj)
+  const cwd = realpathSync(proj)
+  const cfg = join(d.home, 'cfg-cards')
+  mkdirSync(cfg)
+  writeFileSync(join(cfg, '.claude.json'), '{}')
+  mkdirSync(d.relayHome, { recursive: true })
+  writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([cwd]))
+  writeFileSync(join(d.relayHome, 'accounts.json'), JSON.stringify([{ id: 'eeeeeeee', label: 'Personal CarlosDev con una etiqueta de cuenta muy larga', provider: 'claude', configDir: cfg }]))
+  const klog = join(tmp, 'cards-keys.log')
+  const ctl = join(tmp, 'cards-ctl')
+  writeFileSync(ctl, '')
+  const app = await launch(d, { STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-') })
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.getByTestId('account-card').first().waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    const chat = page.getByTestId('chat-pane')
+    const term = page.getByTestId('terminal-pane')
+    const composer = page.getByTestId('composer')
+    const card = page.getByTestId('prompt-card')
+    const btn = (n) => card.locator(`button[data-n="${n}"]`)
+    const lines = () => (existsSync(klog) ? readFileSync(klog, 'utf8').split('\n') : [])
+    const bytes = () => lines().filter((l) => l.startsWith('BYTES:')).map((l) => JSON.parse(l.slice(6))).join('')
+    const answers = () => lines().filter((l) => l.startsWith('ANSWER:'))
+    const poll = async (fn, what) => {
+      for (let i = 0; i < 60; i++) {
+        if (await fn()) return
+        await new Promise((r) => setTimeout(r, 200))
+      }
+      assert.fail(`timeout: ${what}`)
+    }
+    const state = (s) => page.waitForFunction((x) => document.querySelector('[data-testid=activity]')?.dataset.state === x, s, { timeout: t })
+    /** clears the dialog, waits for the idle screen, opens `name` and waits for its card */
+    const open = async (name, kind) => {
+      writeFileSync(ctl, '')
+      await state('idle')
+      await page.waitForTimeout(450) // the previous card's record settles
+      writeFileSync(ctl, name)
+      await page.locator('[data-testid=prompt-card][data-status=live]').waitFor({ timeout: t }) // armed: the fingerprint was stable for 400 ms
+      assert.equal(await card.getAttribute('data-kind'), kind)
+    }
+    const labels = async () => card.locator('button[data-n] > span:last-child').allInnerTexts()
+
+    await composer.waitFor({ timeout: t })
+    await state('idle')
+    assert.equal(bytes(), '', 'nothing reached the pty yet')
+
+    // ---- permission: body + options from the screen, nothing sent without a click ----
+    await open('permission', 'permission')
+    await card.getByText('touch created1.txt').waitFor({ timeout: t })
+    await card.getByText('Do you want to proceed?').waitFor({ timeout: t })
+    assert.deepEqual((await labels()).map((x) => x.split('\n')[0]), ['Yes', 'Yes, and always allow access to', 'Yes, and switch to auto mode · auto mode handles these prompts for you', 'No'])
+    await card.getByText('/tmp/proj from this project').waitFor({ timeout: t })
+    assert.equal(await composer.isDisabled(), true, 'the composer stays blocked while a card shows')
+    await page.getByTestId('composer-hint').getByText('Responde a la tarjeta o abre la terminal.').waitFor({ timeout: t })
+    await page.waitForTimeout(2200)
+    assert.equal(await term.locator('.xterm').isVisible(), false, 'the terminal does not open for a card')
+    assert.equal(bytes(), '', 'no key without a click')
+    for (const scheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme: scheme })
+      await page.waitForTimeout(500)
+      await page.screenshot({ path: join(shots, `card-permission-${scheme}.png`) })
+    }
+    await page.emulateMedia({ colorScheme: null })
+    // click 2: exactly "2"; the card disables and keeps a record; the fake TUI works a moment and returns to idle
+    let m = bytes().length
+    await btn(2).click()
+    await poll(() => bytes().slice(m) === '2', 'option 2 wrote exactly "2"')
+    assert.deepEqual(answers(), ['ANSWER:permission:2'])
+    await state('working')
+    await state('idle')
+    await page.getByTestId('prompt-card').filter({ hasText: 'Respondido' }).waitFor({ timeout: t })
+    assert.equal(await card.getAttribute('data-status'), 'sent')
+    assert.equal(await card.locator('button').count(), 0, 'the answered record has no buttons')
+    assert.equal(bytes().slice(m), '2', 'one key only')
+
+    // double click: one key
+    await open('permission', 'permission')
+    m = bytes().length
+    await btn(1).dblclick()
+    await poll(() => bytes().slice(m) === '1', 'option 1')
+    await page.waitForTimeout(600)
+    assert.equal(bytes().slice(m), '1', 'a double click sends once')
+    assert.equal(answers().filter((a) => a === 'ANSWER:permission:1').length, 1)
+
+    // Cancelar = exactly ESC
+    await open('permission', 'permission')
+    m = bytes().length
+    await card.getByRole('button', { name: 'Cancelar' }).click()
+    await poll(() => bytes().slice(m) === '\x1b', 'cancel wrote exactly ESC')
+    assert.equal(answers().at(-1), 'ANSWER:permission:cancel')
+
+    // keyboard: a digit on the focused card
+    await open('permission', 'permission')
+    m = bytes().length
+    await card.focus()
+    await page.keyboard.press('4')
+    await poll(() => bytes().slice(m) === '4', 'digit 4 on the focused card')
+    assert.equal(answers().at(-1), 'ANSWER:permission:4')
+
+    // ---- stale guard: the TUI swaps to ANOTHER permission dialog (another command) just before the click ----
+    await open('permission', 'permission')
+    await card.getByText('touch created1.txt').waitFor({ timeout: t })
+    m = bytes().length
+    const nAnswers = answers().length
+    // the click fires inside the pty:data handler of the swapped frame: xterm already holds it, the card still shows the old one (React renders ~200 ms later)
+    await page.evaluate(() => {
+      window.__swapped = false
+      let seen = ''
+      window.relay.pty.onData((_id, data) => {
+        if (window.__swapped) return
+        seen += data
+        // the whole swapped frame is in (its last row is the footer) and nothing more will come: xterm holds it, React (200 ms throttle) still shows the old card
+        if (!seen.includes('other-file.txt') || !seen.includes('Tab to amend')) return
+        window.__swapped = true
+        document.querySelector('[data-testid=prompt-card] button[data-n="2"]').click()
+      })
+    })
+    writeFileSync(ctl, 'permission2')
+    await page.waitForFunction(() => window.__swapped, null, { timeout: t })
+    await page.getByTestId('prompt-note').getByText(/La pantalla del CLI cambió/).waitFor({ timeout: t }) // the fingerprint compare dropped it
+    await card.getByText('other-file.txt').waitFor({ timeout: t })
+    await page.waitForTimeout(500)
+    assert.equal(bytes().slice(m), '', 'the fingerprint guard sent no byte')
+    assert.equal(answers().length, nAnswers, 'the fake TUI answered nothing')
+    assert.equal(await card.getAttribute('data-status'), 'live', 'the new dialog has its own fresh card')
+    assert.equal(await btn(2).isDisabled(), false)
+    await page.getByTestId('prompt-note').getByRole('button', { name: 'Abrir terminal' }).waitFor({ timeout: t })
+
+    // ---- answered in the terminal: the card turns into a record ----
+    await open('permission', 'permission')
+    m = bytes().length
+    await page.getByRole('button', { name: 'Terminal', exact: true }).click()
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await term.locator('.xterm').click()
+    await page.keyboard.press('1')
+    await poll(() => bytes().slice(m) === '1', 'the terminal keystroke reached the pty')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await page.getByTestId('prompt-card').filter({ hasText: 'Respondido en la terminal' }).waitFor({ timeout: t })
+    assert.equal(await card.getAttribute('data-status'), 'terminal')
+    assert.equal(await card.locator('button').count(), 0)
+    assert.equal(bytes().slice(m), '1', 'Relay wrote nothing itself')
+
+    // ---- AskUserQuestion, single: descriptions from the transcript, "Type something" -> digit + text + Enter ----
+    await open('question', 'question')
+    await card.getByText('Rojo desde el transcript').waitFor({ timeout: t })
+    assert.deepEqual((await labels()).map((x) => x.split('\n')[0]), ['Red', 'Blue', 'Type something.', 'Chat about this'])
+    await page.screenshot({ path: join(shots, 'card-question-light.png') })
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await page.waitForTimeout(500)
+    await page.screenshot({ path: join(shots, 'card-question-dark.png') })
+    await page.emulateMedia({ colorScheme: null })
+    m = bytes().length
+    await btn(3).click()
+    assert.equal(bytes().slice(m), '', 'the digit of a text row waits for the text')
+    const box = card.getByTestId('prompt-text')
+    await box.fill('Verde\x1b[201~ claro')
+    await box.press('Enter')
+    await poll(() => bytes().slice(m) === '3Verde[201~ claro\r', 'digit, sanitized line, Enter')
+    assert.equal(answers().at(-1), 'ANSWER:question:text:Verde[201~ claro')
+    assert.deepEqual(lines().filter((l) => l.startsWith('BYTES:')).map((l) => JSON.parse(l.slice(6))).slice(-3), ['3', 'Verde[201~ claro', '\r'], 'three separate writes')
+
+    // ---- M3b: a new card cannot be answered while it settles (a MutationObserver clicks option 1 the moment a card first renders, and again 150 ms later) ----
+    await page.evaluate(() => {
+      const a = (window.__arm = { clicks: 0, late: [], seen: new WeakSet(), stop: () => ob.disconnect() })
+      const go = (c) => {
+        const click = () => (c.querySelector('button[data-n="1"]')?.click(), a.clicks++)
+        click()
+        setTimeout(() => (a.late.push(c.dataset.status), click()), 150)
+      }
+      const ob = new MutationObserver((recs) => {
+        for (const r of recs) {
+          const cs = r.type === 'attributes' ? [r.target] : [...r.addedNodes].flatMap((n) => (n.nodeType === 1 ? [...(n.matches('[data-testid=prompt-card]') ? [n] : []), ...n.querySelectorAll('[data-testid=prompt-card]')] : []))
+          for (const c of cs) if (c.dataset?.testid === 'prompt-card' && c.dataset.status === 'settling' && c.querySelector('button[data-n]')) go(c)
+        }
+      })
+      ob.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-status'] })
+    })
+    m = bytes().length
+    const nAns = answers().length
+    writeFileSync(ctl, '')
+    await state('idle')
+    await page.waitForTimeout(450)
+    writeFileSync(ctl, 'question')
+    await page.locator('[data-testid=prompt-card][data-status=live]').waitFor({ timeout: t })
+    await page.waitForTimeout(300) // the delayed click (150 ms after the card appeared) has run by now
+    const arm = await page.evaluate(() => (window.__arm.stop(), { clicks: window.__arm.clicks, late: window.__arm.late }))
+    assert.ok(arm.clicks >= 2 && arm.late.length >= 1, `the observer clicked the settling card (${JSON.stringify(arm)})`)
+    assert.ok(arm.late.every((x) => x === 'settling'), `still settling 150 ms after the card appeared (${arm.late})`)
+    assert.equal(bytes().slice(m), '', 'no byte while the card settled')
+    assert.equal(answers().length, nAns, 'no answer while the card settled')
+
+    // single option by digit
+    await open('question', 'question')
+    m = bytes().length
+    await btn(2).click()
+    await poll(() => bytes().slice(m) === '2', 'option 2 of the question')
+
+    // ---- M1: a CLI where the digit of "Type something" confirms: the line and Enter are never sent ----
+    await open('question3', 'question')
+    m = bytes().length
+    await btn(3).click()
+    await card.getByTestId('prompt-text').fill('Hola')
+    await card.getByTestId('prompt-text').press('Enter')
+    await poll(() => answers().at(-1) === 'ANSWER:question:3', 'the fake TUI took the digit as a confirmation')
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t }) // the failed check opens the terminal
+    await page.waitForTimeout(800)
+    assert.equal(bytes().slice(m), '3', 'only the digit: neither the line nor Enter reached the pty')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+
+    // ---- M2: a command taller than the screen: the card refuses to offer answers ----
+    writeFileSync(ctl, '')
+    await state('idle')
+    await page.waitForTimeout(450)
+    m = bytes().length
+    writeFileSync(ctl, 'longperm')
+    await page.getByTestId('prompt-refused').waitFor({ timeout: t })
+    assert.equal(await card.locator('button[data-n]').count(), 0, 'no option buttons for a dialog that does not fit')
+    await page.keyboard.press('1')
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'nothing written')
+
+    // ---- multi-select + tabs + review ----
+    await open('multi', 'question')
+    assert.deepEqual((await labels()).map((x) => x.split('\n')[0]), ['Apple', 'Pear', 'Plum', 'Type something', 'Chat about this'])
+    m = bytes().length
+    await btn(1).click()
+    await poll(() => bytes().slice(m) === '1', 'toggle 1')
+    await btn(1).getByText('☑').waitFor({ timeout: t }) // re-armed with the new fingerprint
+    await btn(3).click()
+    await poll(() => bytes().slice(m) === '13', 'toggle 3')
+    await btn(3).getByText('☑').waitFor({ timeout: t })
+    assert.equal(await btn(2).getByText('☐').count(), 1)
+    await card.getByRole('button', { name: 'Siguiente' }).click()
+    await poll(() => bytes().slice(m) === '13\t', 'Next = Tab')
+    await card.getByText('Which size do you want?').waitFor({ timeout: t })
+    // double click on question 1 of a two-question single-select flow: exactly one digit (the 2nd click lands on the locked card, or on the unarmed review card; arming itself is tested below)
+    await btn(2).dblclick()
+    await poll(() => bytes().slice(m) === '13\t2', 'single-select digit on the second tab')
+    await page.waitForTimeout(700)
+    assert.equal(bytes().slice(m), '13\t2', 'the second click of a double click reached nothing')
+    await card.getByText('Review your answers').first().waitFor({ timeout: t })
+    assert.equal(await card.getAttribute('data-kind'), 'review')
+    assert.deepEqual((await labels()).map((x) => x.split('\n')[0]), ['Submit answers', 'Cancel'])
+    await btn(1).click()
+    await poll(() => bytes().slice(m) === '13\t21', 'review: 1 submits')
+    assert.deepEqual(answers().slice(-5), ['ANSWER:multi:toggle:1', 'ANSWER:multi:toggle:3', 'ANSWER:multi:next', 'ANSWER:multi:size:2', 'ANSWER:multi:review:1'])
+
+    // ---- plan: markdown from the transcript, option 3 -> text ----
+    await open('plan', 'plan')
+    await card.getByRole('heading', { name: 'Plan de prueba' }).waitFor({ timeout: t })
+    assert.deepEqual((await labels()).map((x) => x.split('\n')[0]), ['Yes, and use auto mode', 'Yes, manually approve edits', 'Tell Claude what to change'])
+    for (const size of [[1280, 800], [900, 600]]) {
+      await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].setSize(s[0], s[1]), size)
+      await page.waitForTimeout(500)
+      assert.deepEqual(await mainOverflow(page, true), [], `main content overflows with a plan card (${size[0]}px)`)
+      await sidebarFits(page, `plan card ${size[0]}px`)
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.waitForTimeout(500)
+    m = bytes().length
+    await btn(3).click()
+    await card.getByTestId('prompt-text').fill('Añade tests')
+    await card.getByRole('button', { name: 'Enviar', exact: true }).click()
+    await poll(() => bytes().slice(m) === '3Añade tests\r', 'plan feedback: digit, text, Enter')
+    assert.equal(answers().at(-1), 'ANSWER:plan:text:Añade tests')
+    await open('plan', 'plan')
+    m = bytes().length
+    await btn(1).click()
+    await poll(() => bytes().slice(m) === '1', 'plan option 1')
+
+    // ---- dialogs without a card keep the F6.3 behaviour ----
+    for (const [name, what] of [['odd', 'dialog:unknown'], ['trust', 'dialog:trust']]) {
+      writeFileSync(ctl, '')
+      await state('idle')
+      await page.waitForTimeout(450)
+      m = bytes().length
+      writeFileSync(ctl, name)
+      await state(what)
+      await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+      await page.getByRole('alert').filter({ hasText: 'espera una respuesta' }).last().waitFor({ timeout: t }) // toasts of the previous round may still be up
+      assert.equal(await chat.isVisible(), false, `${what}: the terminal opened by itself`)
+      assert.equal(bytes().slice(m), '', `${what}: nothing written`)
+      await page.getByRole('button', { name: 'Chat', exact: true }).click()
+      assert.equal(await card.filter({ has: page.locator('[data-n]') }).count(), 0, `${what}: no card`)
+    }
+    writeFileSync(ctl, '')
+    await state('idle')
     assert.ok(!existsSync(join(d.home, '.claude')), 'nothing written outside the temp HOME')
   } finally {
     await app.close()

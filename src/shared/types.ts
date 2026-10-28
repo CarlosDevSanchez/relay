@@ -1,3 +1,4 @@
+import type { AnswerAction } from './prompt'
 export type ProviderId = 'claude' | 'codex'
 
 export const CROSS_PROVIDER = 'Claude ↔ Codex llegará después del MVP'
@@ -255,6 +256,8 @@ export interface RelayApi {
     stop(ptyId: number): Promise<boolean>
     /** empties the CLI's input box (fixed allowlist in main: `\x15`, preceded by ESC when a `/` or `@` list is open) */
     clear(ptyId: number, opts: { overlay: boolean }, seq: number): Promise<'ok' | 'stale' | 'gone'>
+    /** prompt card (F6.4): one action from the closed allowlist; main builds the keys. `seq` as in send, 'stale' = nothing written */
+    answer(ptyId: number, seq: number, action: AnswerAction): Promise<'ok' | 'stale' | 'gone'>
     /** `seq` numbers the output chunks of a pty (the composer bridge's stale-frame guard) */
     onData(cb: (ptyId: number, data: string, seq: number) => void): () => void
     onExit(cb: (ptyId: number, code: number) => void): () => void

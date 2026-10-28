@@ -35,6 +35,7 @@ const api: RelayApi = {
     send: (id, text, seq) => ipcRenderer.invoke('pty:send', id, text, seq),
     stop: (id) => ipcRenderer.invoke('pty:stop', id),
     clear: (id, opts, seq) => ipcRenderer.invoke('pty:clear', id, opts, seq),
+    answer: (id, seq, action) => ipcRenderer.invoke('pty:answer', id, seq, action),
     onData: (cb) => sub('pty:data', cb),
     onExit: (cb) => sub('pty:exit', cb)
   },

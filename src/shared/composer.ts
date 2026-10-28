@@ -1,5 +1,6 @@
 // Pure rules of the chat composer (F6.3, design 5.4 / 5.6); the screen state comes from screen.ts.
-import type { ScreenState } from './screen'
+import { hasCard } from './prompt'
+import type { DialogKind, ScreenState } from './screen'
 
 /** send = write now (only from `idle`: a working CLI may raise a permission dialog any moment and `\r` would confirm it); confirm = the CLI's box is not empty, ask before clearing it; blocked = never write. */
 export type SendPlan = 'send' | 'confirm' | 'blocked'
@@ -24,7 +25,7 @@ export function composerHint(s: ScreenState, bracketed = true): string {
   if (!bracketed && s !== 'exited') return 'El CLI no acepta pegado: escribe en la terminal.'
   if (s === 'working') return 'Espera a que el CLI termine o pulsa Parar.'
   if (s === 'overlay' || s === 'input-pending') return 'La entrada del CLI no está vacía: te pediré confirmación para vaciarla.'
-  if (isDialog(s)) return 'El CLI espera una respuesta en la terminal; el chat no envía mientras tanto.'
+  if (isDialog(s)) return hasCard(s.slice(7) as DialogKind) ? 'Responde a la tarjeta o abre la terminal.' : 'El CLI espera una respuesta en la terminal; el chat no envía mientras tanto.'
   if (s === 'exited') return 'La sesión terminó.'
   if (s === 'unknown') return 'Relay no reconoce la pantalla del CLI: usa la terminal.'
   return ''

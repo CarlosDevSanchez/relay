@@ -165,13 +165,11 @@ function ToolCard({ e, r }: { e: Tool; r: TranscriptRef }) {
                 </div>
               )
             })}
-            {ask && <Warn>Esperando tu respuesta en la terminal.</Warn>}
           </div>
         )}
         {e.name === 'ExitPlanMode' && (
           <>
             <Markdown text={s(i.plan)} />
-            {ask && <Warn>Esperando tu decisión en la terminal.</Warn>}
           </>
         )}
         {(e.name === 'Agent' || e.name === 'Task') && (
@@ -235,7 +233,7 @@ export function pendingTool(events: TEvent[]): string | null {
   return (t ? `${e.name} · ${t}` : e.name).slice(0, 80)
 }
 
-export function ConversationView({ r: ref, onTool, onMeta }: { r: TranscriptRef; onTool?: (label: string | null) => void; onMeta?: (m: TMeta) => void }) {
+export function ConversationView({ r: ref, onTool, onMeta, onAsk }: { r: TranscriptRef; onTool?: (label: string | null) => void; onMeta?: (m: TMeta) => void; onAsk?: (a: { name: string; input: unknown } | null) => void }) {
   const r = useMemo(() => ref, [ref.accountId, ref.cwd, ref.sessionId]) // stable identity: Item's memo needs it
   const [st, setSt] = useState<TState>(emptyTState)
   const feed = useRef<ReturnType<typeof createFeed>>(null)
@@ -252,6 +250,10 @@ export function ConversationView({ r: ref, onTool, onMeta }: { r: TranscriptRef;
   }, [r.accountId, r.cwd, r.sessionId])
   useEffect(() => onTool?.(pendingTool(st.events)), [st.events])
   useEffect(() => onMeta?.(st.meta), [st.meta])
+  useEffect(() => {
+    const e = st.events.findLast((x): x is Tool => x.kind === 'tool' && isPendingAsk(x))
+    onAsk?.(e ? { name: e.name, input: e.input } : null)
+  }, [st.events])
   if (seen.current === null && st.seq >= 0) seen.current = st.events.at(-1)?.at ?? -1
   useLayoutEffect(() => {
     const el = box.current!

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { hasCard } from '../shared/prompt'
 import { activityText, autoOpenMessage, browse, canType, composerHint, isDialog, sendPlan } from '../shared/composer'
 import type { TMeta, TranscriptRef } from '../shared/types'
 import { ConversationView } from './Conversation'
+import { type PendingAsk, PromptCard } from './Prompt'
 import { type Snap, freshScreen, readScreen } from './screens'
 import { IconFolder, IconSend, IconStop, type Modal } from './ui'
 
@@ -55,6 +57,8 @@ export function ChatPane({ ptyId, r, account, exited, active, showing, modal, on
   const [meta, setMeta] = useState<TMeta>({})
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  const [ask, setAsk] = useState<PendingAsk | null>(null)
+  const [sent, setSent] = useState(0)
   const hist = useRef(histories.get(ptyId) ?? histories.set(ptyId, []).get(ptyId)!)
   const pos = useRef(hist.current.length)
   const saved = useRef('')
@@ -64,8 +68,9 @@ export function ChatPane({ ptyId, r, account, exited, active, showing, modal, on
   const stateRef = useRef(state)
   stateRef.current = state
 
-  // a screen the chat cannot show (unknown, or any dialog until the F6.4 cards exist; not blank: the CLI may still be starting) for ~1.5 s: open the real terminal, once per episode
-  const attention = isDialog(state) || state === 'unknown'
+  // a screen the chat cannot show (unknown, or a dialog without a card: trust / model / unknown; not blank: the CLI may still be starting) for ~1.5 s: open the real terminal, once per episode
+  const card = !!screen.dialog && hasCard(screen.dialog.kind)
+  const attention = (isDialog(state) && !card) || state === 'unknown'
   useEffect(() => {
     if (!attention) return void (autoDone.current = false)
     if (!active || screen.blank || autoDone.current || !showing) return
@@ -110,6 +115,7 @@ export function ChatPane({ ptyId, r, account, exited, active, showing, modal, on
       hist.current.push(text)
       pos.current = hist.current.length
       setDraft('')
+      setSent((n) => n + 1)
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -136,8 +142,9 @@ export function ChatPane({ ptyId, r, account, exited, active, showing, modal, on
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="chat">
       <div className="min-h-0 flex-1">
-        <ConversationView key={r.sessionId} r={r} onTool={setTool} onMeta={setMeta} />
+        <ConversationView key={r.sessionId} r={r} onTool={setTool} onMeta={setMeta} onAsk={setAsk} />
       </div>
+      <PromptCard ptyId={ptyId} exited={exited} screen={screen} pending={ask} epoch={sent} onTerminal={() => onTerminal()} />
       {attention && (
         <div role="status" className="alert alert-soft rounded-none py-1 text-xs" data-testid="cli-notice">
           <span>{isDialog(state) ? 'El CLI muestra un aviso o una pregunta que el chat aún no sabe mostrar.' : 'Relay no reconoce lo que muestra el CLI.'}</span>

@@ -1,7 +1,10 @@
 // The composer bridge (F6.3): the renderer sends ids and text only; every byte that reaches the CLI's pty from these paths is built here.
 // Never ^C (\x03), ^D (\x04) or ^Z (\x1a): the allowlist is Enter (after a bracketed paste), ESC (Stop / close a list) and ^U (clear the box).
 
+import type { AnswerAction } from '../shared/prompt'
+
 export const MAX_SEND = 20_000
+export const MAX_ANSWER = 1000
 const PASTE_START = '\x1b[200~'
 const PASTE_END = '\x1b[201~'
 /** Stop: a single ESC interrupts the turn. */
@@ -19,3 +22,23 @@ export function pasteBytes(text: string): string {
 
 /** Empties the CLI's input box: ESC first only when a `/` or `@` list is open (it leaves the character behind), then ^U. */
 export const clearSteps = (overlay: boolean): string[] => (overlay ? ['\x1b', '\x15'] : ['\x15'])
+
+/** A card answer as the writes to make, in order (each its own write: the CLI reads a digit and a text row differently). Allowlist: a digit 1-9, Tab, ESC, and for a text row the digit alone, then (verified by the renderer) one clean line + Enter. */
+export function answerSteps(a: AnswerAction): string[] {
+  switch (a.kind) {
+    case 'option':
+    case 'toggle':
+      return [String(a.n)]
+    case 'next':
+      return ['\t']
+    case 'cancel':
+      return [STOP]
+    case 'text':
+      return [String(a.n)]
+    case 'line': {
+      const line = a.text.replace(/[\r\n]+/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim() // no bracketed paste inside a dialog (unverified): plain characters
+      if (!line) throw new Error('Respuesta vacía')
+      return [line, '\r']
+    }
+  }
+}

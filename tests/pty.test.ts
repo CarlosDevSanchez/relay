@@ -14,7 +14,7 @@ vi.mock('node-pty', () => ({
   }
 }))
 
-const { clearPty, sendPty, stopPty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, spawnPty, wasBound, writePty } = await import('../src/main/pty')
+const { answerPty, clearPty, sendPty, stopPty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, spawnPty, wasBound, writePty } = await import('../src/main/pty')
 const exits: number[] = []
 const mk = (acc: string, sid?: string) => spawnPty('x', [], '/', {}, acc, sid, () => undefined, (id) => void exits.push(id))
 
@@ -107,6 +107,66 @@ describe('composer bridge writes', () => {
     expect(await clearPty(id, true, 2, 1)).toBe('ok')
     expect(await clearPty(id, false, 2, 1)).toBe('ok')
     expect(f.written).toEqual(['\x1b', '\x15', '\x15'])
+    await killPty(id)
+  })
+  it('answer writes the allowlisted keys: a digit, Tab, ESC; one answer per frame', async () => {
+    const { id, f } = live()
+    expect(await answerPty(id, 2, { kind: 'option', n: 2 }, 1)).toBe('ok')
+    f.data('x') // the CLI redrew: a new frame
+    expect(await answerPty(id, 3, { kind: 'next' }, 1)).toBe('ok')
+    f.data('x')
+    expect(await answerPty(id, 4, { kind: 'cancel' }, 1)).toBe('ok')
+    expect(f.written).toEqual(['2', '\t', '\x1b'])
+    await killPty(id)
+  })
+  it('answer: a stale seq, a second answer on the same frame and a gone pty write nothing', async () => {
+    const { id, f } = live()
+    expect(await answerPty(id, 1, { kind: 'option', n: 1 }, 1)).toBe('stale')
+    expect(await answerPty(id, 2, { kind: 'option', n: 1 }, 1)).toBe('ok')
+    expect(await answerPty(id, 2, { kind: 'option', n: 2 }, 1)).toBe('stale') // another button on the same frame
+    expect(await answerPty(id, 2, { kind: 'cancel' }, 1)).toBe('stale')
+    expect(f.written).toEqual(['1'])
+    await killPty(id)
+    expect(await answerPty(id, 2, { kind: 'cancel' }, 1)).toBe('gone')
+  })
+  it('a text row: the digit first; the line + Enter only on a newer frame right after it, once', async () => {
+    const { id, f } = live()
+    expect(await answerPty(id, 2, { kind: 'line', text: 'sin digito' }, 1)).toBe('stale') // no digit before
+    expect(await answerPty(id, 2, { kind: 'text', n: 3 }, 1)).toBe('ok')
+    expect(f.written).toEqual(['3'])
+    expect(await answerPty(id, 2, { kind: 'line', text: 'x' }, 1)).toBe('stale') // same frame as the digit
+    f.data('redraw')
+    expect(await answerPty(id, 3, { kind: 'line', text: 'Gre\x1ben\n' }, 1)).toBe('ok')
+    expect(f.written).toEqual(['3', 'Green', '\r'])
+    f.data('redraw')
+    expect(await answerPty(id, 4, { kind: 'line', text: 'otra' }, 1)).toBe('stale') // the wait is over
+    await expect(answerPty(id, 4, { kind: 'text', n: 3 }, 1).then(() => answerPty(id, 5, { kind: 'line', text: '\x1b' }, 1))).rejects.toThrow()
+    await killPty(id)
+  })
+  it('a line is refused after ANY other write on the pty (user typing, send, stop, clear) and on a stale seq', async () => {
+    const { id, f } = live()
+    let cur = 2
+    const redraw = () => (f.data('r'), ++cur)
+    for (const other of [() => writePty(id, 'k'), () => void sendPty(id, 'm', cur), () => void stopPty(id), () => void clearPty(id, false, cur, 1)]) {
+      expect(await answerPty(id, cur, { kind: 'text', n: 1 }, 1)).toBe('ok')
+      await other()
+      redraw()
+      f.written.length = 0
+      expect(await answerPty(id, cur, { kind: 'line', text: 'x' }, 1)).toBe('stale')
+      expect(f.written).toEqual([])
+      redraw()
+    }
+    expect(await answerPty(id, cur, { kind: 'text', n: 1 }, 1)).toBe('ok')
+    redraw()
+    expect(await answerPty(id, cur - 1, { kind: 'line', text: 'x' }, 1)).toBe('stale') // an older frame than the renderer saw is a stale seq
+    await killPty(id)
+  })
+  it('Cancel is still allowed while a text line is awaited', async () => {
+    const { id, f } = live()
+    expect(await answerPty(id, 2, { kind: 'text', n: 3 }, 1)).toBe('ok')
+    f.data('r')
+    expect(await answerPty(id, 3, { kind: 'cancel' }, 1)).toBe('ok')
+    expect(f.written).toEqual(['3', '\x1b'])
     await killPty(id)
   })
   it('a gone pty reports gone and writes nothing', async () => {

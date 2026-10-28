@@ -1,7 +1,8 @@
 // Pure screen classifier (F6.3): the xterm viewport as text + the cursor row -> what the official CLI is showing. Rules: docs/spikes/F6b.md section 11;
 // oracle: tests/fixtures/screens/README.md. Interface strings are the CLI's and may change between versions: anything not recognised degrades to
 // `unknown` (the terminal is the fallback), never to `idle`.
-// Known limit: a numbered list typed into the CLI's own box reads as `dialog:unknown` (blocked, the terminal opens): the safe direction.
+// Known limits: a numbered list typed into the CLI's own box reads as `dialog:unknown` (blocked, the terminal opens): the safe direction. A command or plan that itself contains a
+// full-width `─` rule line evades `truncated` (the card would show only the part after that line, and its fingerprint covers only that part).
 
 export type DialogKind = 'permission' | 'plan' | 'review' | 'question' | 'model' | 'trust' | 'unknown'
 export type ScreenState = 'idle' | 'working' | 'overlay' | 'input-pending' | 'exited' | 'unknown' | `dialog:${DialogKind}`
@@ -12,13 +13,18 @@ export interface ScreenInput {
   cursorY: number
   exited?: boolean
 }
-export interface DialogOption { n: number; text: string; selected: boolean }
+/** `more` = the indented lines under the option (a wrapped path, an AskUserQuestion description) */
+export interface DialogOption { n: number; text: string; selected: boolean; more?: string }
 export interface DialogInfo {
   kind: DialogKind
   question: string
+  /** non-blank lines between the dialog's top rule and the options, minus the question and `╌` rows (the command, the file, the tab bar, the plan) */
+  body: string[]
   options: DialogOption[]
   /** kind + body + options: a card is only valid while the live screen still yields the same fingerprint (F6.4) */
   fingerprint: string
+  /** the dialog's top rule is not on screen (a long command or plan scrolled off): the card must not offer answers for what it cannot show */
+  truncated?: boolean
 }
 export interface Screen {
   state: ScreenState
@@ -29,7 +35,8 @@ export interface Screen {
 
 const WINDOW = 20
 const RULE = /^\s*─{20,}\s*$/
-const OPTION = /^\s*(❯\s*)?(\d+)\.\s+(\S.*)$/
+/** 1 = prefix up to the digit, 2 = `❯` marker, 3 = n, 4 = text */
+const OPTION = /^(\s*(❯\s*)?)(\d+)\.\s+(\S.*)$/
 const NUMBERED_MARK = /^\s*❯\s*\d+\./
 const SPINNER = /^\s*[·✢✳✶✻✽*]\s+\S.*…/
 const TRUST = /Accessing workspace/
@@ -59,14 +66,13 @@ export function classifyScreen({ lines, cursorY, exited }: ScreenInput): Screen 
   const below = w.slice(bot + 1).filter((l) => !blank(l))
   const first = w[top + 1] ?? ''
   const hasBox = rules.length >= 2 && bot - top > 1 && /^\s*❯/.test(first) && !NUMBERED_MARK.test(first) && below.length <= 3
-  const options = w.flatMap((l) => {
-    const m = OPTION.exec(l)
-    return m ? [{ n: Number(m[2]), text: m[3]!.trim(), selected: !!m[1] }] : []
-  })
+  const { options, first: firstOpt, ok } = parseOptions(w)
 
   if (!hasBox && (options.length >= 2 || w.some((l) => TRUST.test(l)))) {
-    const kind = ANCHORS.find(([, re]) => w.some((l) => re.test(l)))?.[0] ?? 'unknown'
-    return { state: `dialog:${kind}`, dialog: dialogInfo(kind, w, options) }
+    // a final group that is not 1..k in a row cannot be mapped to digits: unknown (terminal), never a card
+    const kind = !ok ? 'unknown' : ANCHORS.find(([, re]) => w.some((l) => re.test(l)))?.[0] ?? 'unknown'
+    // the whole screen, not the 20-row window: the command / plan text may sit above it (and the viewport pads with blank rows)
+    return { state: `dialog:${kind}`, dialog: dialogInfo(kind, lines.slice(0, end + 1), options, firstOpt < 0 ? -1 : firstOpt + start) }
   }
   if (w.some((l) => /\/keybindings to customize/.test(l))) return { state: 'overlay' }
   if (!hasBox) return { state: 'unknown' }
@@ -77,11 +83,41 @@ export function classifyScreen({ lines, cursorY, exited }: ScreenInput): Screen 
   return { state: busy ? 'working' : 'idle', busy }
 }
 
-function dialogInfo(kind: DialogKind, w: string[], options: DialogOption[]): DialogInfo {
-  const firstOpt = w.findIndex((l) => OPTION.test(l))
-  const head = firstOpt < 0 ? w : w.slice(0, firstOpt)
+/**
+ * The LAST numbered group (a plan's own steps `1. 2.` precede the decision `1. 2. 3.`: an unindented `1.` restarts the list). Rows indented to the option's text
+ * column or deeper (also ones that look like `1. x`) are its `more`. `ok` = the group counts up one by one (it may start above 1 when the list scrolled).
+ */
+function parseOptions(w: string[]): { options: DialogOption[]; first: number; ok: boolean } {
+  let options: DialogOption[] = []
+  let first = -1
+  let col = -1 // text column of the last option
+  w.forEach((l, i) => {
+    const m = OPTION.exec(l)
+    if (m && !(col >= 0 && m[1]!.length >= col)) {
+      const n = Number(m[3])
+      if (n === 1) ((options = []), (first = i))
+      else if (first < 0) first = i
+      options.push({ n, text: m[4]!.trim(), selected: !!m[2] })
+      col = l.length - m[4]!.length
+    } else if (col >= 0 && l.trim() && !RULE.test(l) && l.search(/\S/) >= col) {
+      const o = options.at(-1)!
+      o.more = o.more ? `${o.more} ${l.trim()}` : l.trim()
+    } else col = -1
+  })
+  return { options, first, ok: options.every((o, i) => !i || o.n === options[i - 1]!.n + 1) }
+}
+
+function dialogInfo(kind: DialogKind, all: string[], options: DialogOption[], firstOpt: number): DialogInfo {
+  const head = firstOpt < 0 ? all : all.slice(0, firstOpt)
   const question = (head.findLast((l) => QUESTION.test(l)) ?? head.findLast((l) => !blank(l)) ?? '').trim()
-  const from = head.findLastIndex((l) => RULE.test(l))
-  const body = head.slice(from + 1).filter((l) => !blank(l) && !/^[╌\s]+$/.test(l)).map((l) => l.trim())
-  return { kind, question, options, fingerprint: [kind, ...body, ...options.map((o) => `${o.n}. ${o.text}`)].join('\n') }
+  // the plan dialog has two rules (above its title, below the plan text): keep the plan text in the fingerprint
+  const rules = head.flatMap((l, i) => (RULE.test(l) ? [i] : []))
+  const from = (kind === 'plan' ? rules.at(-2) : rules.at(-1)) ?? -1
+  const lines = head.slice(from + 1).filter((l) => !blank(l) && !/^[╌\s]+$/.test(l) && !RULE.test(l) && !/^Tip:/.test(l.trim())).map((l) => l.trim())
+  const body = lines.filter((l) => l !== question)
+  return {
+    kind, question, body, options,
+    fingerprint: [kind, ...lines, ...options.map((o) => `${o.n}. ${o.text}${o.more ? ` ${o.more}` : ''}`)].join('\n'),
+    ...(from < 0 && kind !== 'trust' ? { truncated: true } : {})
+  }
 }

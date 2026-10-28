@@ -262,7 +262,7 @@ export interface RelayApi {
   catalog: { list(): Promise<CatalogLocation[]>; open(accountId: string): Promise<void> }
   mcp: { list(): Promise<McpReport> }
   transcript: {
-    /** starts live events for a Claude session; resolves with the last page (snapshot, seq 0) */
+    /** starts live events for a Claude session; resolves with the last page (snapshot, carries the current seq) */
     subscribe(ref: TranscriptRef): Promise<TBatch>
     unsubscribe(ref: TranscriptRef): Promise<void>
     older(ref: TranscriptRef, before: number): Promise<TBatch>

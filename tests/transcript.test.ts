@@ -2,8 +2,8 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, real
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { applyBatch, emptyTState } from '../src/shared/transcript'
-import type { Account, TEvent } from '../src/shared/types'
+import { applyBatch, createFeed, emptyTState, type FeedApi } from '../src/shared/transcript'
+import type { Account, TBatch, TEvent } from '../src/shared/types'
 import { createParser, isPendingAsk } from '../src/main/transcript/parse'
 import { PAGE, createHub, openSession, readPage } from '../src/main/transcript/session'
 import { checkAgentId, checkOffset, checkTranscriptRef } from '../src/main/validate'
@@ -317,10 +317,11 @@ describe('F6.1 audit regressions', () => {
     let st = applyBatch(emptyTState(), s.snapshot())
     expect(st.events).toHaveLength(5)
     writeFileSync(file, JSON.stringify({ type: 'user', uuid: 'new', message: { content: 'rewritten' } }) + '\n')
-    for (let i = 0; i < 40 && got.length < 2; i++) await new Promise((r) => setTimeout(r, 100))
+    for (let i = 0; i < 40 && got.length < 1; i++) await new Promise((r) => setTimeout(r, 100))
     s.stop()
-    expect(got[0]).toMatchObject({ seq: 1, events: [], older: null })
-    expect(got[1].events[0]).toMatchObject({ text: 'rewritten' })
+    expect(got).toHaveLength(1) // one bounded snapshot (readPage), not an empty reset plus a replay
+    expect(got[0]).toMatchObject({ seq: 1, older: null })
+    expect(got[0].events[0]).toMatchObject({ text: 'rewritten' })
     for (const b of got) st = applyBatch(st, b)
     expect(st.events.map((e) => (e as { text: string }).text)).toEqual(['rewritten'])
   })
@@ -393,5 +394,88 @@ describe('validation', () => {
     for (const bad of ['../x', 'abc', 5, '', 'a1b2c3d4/../x']) expect(() => checkAgentId(bad)).toThrow()
     expect(checkOffset(0)).toBe(0)
     for (const bad of [-1, 1.5, '3', NaN, undefined]) expect(() => checkOffset(bad)).toThrow()
+  })
+})
+
+describe('createFeed (renderer state per tab)', () => {
+  const ref = { accountId: 'a1', cwd: '/p', sessionId: SID }
+  const msg = (n: number): TEvent => ({ id: `m${n}`, at: n, kind: 'message', role: 'user', text: `t${n}` })
+  const mk = (over: Partial<FeedApi> = {}) => {
+    let push: (b: TBatch) => void = () => undefined
+    const api = {
+      subscribe: async () => ({ accountId: 'a1', sessionId: SID, seq: 2, events: [msg(1), msg(2)], older: 100 }) as TBatch,
+      unsubscribe: async () => undefined,
+      older: async () => ({ accountId: 'a1', sessionId: SID, events: [msg(0)], older: null }) as TBatch,
+      onEvents: (cb: (b: TBatch) => void) => ((push = cb), () => (push = () => undefined)),
+      ...over
+    } satisfies FeedApi
+    return { api, emit: (b: TBatch) => push(b) }
+  }
+  const live = (seq: number, n: number): TBatch => ({ accountId: 'a1', sessionId: SID, seq, events: [msg(n)] })
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+
+  it('buffers live batches until the snapshot arrived, drops the ones it contains and ignores other sessions/agents', async () => {
+    const { api, emit } = mk()
+    let st = emptyTState()
+    const f = createFeed(api, ref, (s) => (st = s))
+    emit(live(2, 2)) // already in the snapshot
+    emit(live(3, 3))
+    emit({ ...live(4, 9), sessionId: 'other' })
+    emit({ ...live(4, 9), agentId: 'a1b2c3d4' })
+    expect(st.events).toHaveLength(0)
+    await tick()
+    expect(st.events.map((e) => e.id)).toEqual(['m1', 'm2', 'm3'])
+    emit(live(4, 4))
+    expect(f.state().events).toHaveLength(4)
+  })
+
+  it('older pages load once and a reply requested before a newer snapshot is dropped', async () => {
+    let release: (b: TBatch) => void = () => undefined
+    const { api, emit } = mk({ older: () => new Promise<TBatch>((r) => (release = r)) })
+    let st = emptyTState()
+    const f = createFeed(api, ref, (s) => (st = s))
+    f.older() // not ready yet: no-op
+    await tick()
+    f.older()
+    f.older() // in flight: no-op
+    emit({ accountId: 'a1', sessionId: SID, seq: 7, events: [msg(5)], older: 50 }) // rewritten file: snapshot replaces the events
+    release({ accountId: 'a1', sessionId: SID, events: [msg(0)], older: null })
+    await tick()
+    expect(st.events.map((e) => e.id)).toEqual(['m5'])
+    expect(st.older).toBe(50)
+  })
+
+  it('older appends when no snapshot came in between; stop unsubscribes and ignores later batches', async () => {
+    const calls: string[] = []
+    const { api, emit } = mk({ unsubscribe: async () => void calls.push('unsub') })
+    let st = emptyTState()
+    const f = createFeed(api, ref, (s) => (st = s))
+    await tick()
+    f.older()
+    await tick()
+    expect(st.events.map((e) => e.id)).toEqual(['m0', 'm1', 'm2'])
+    expect(st.older).toBeNull()
+    f.older() // everything loaded
+    f.stop()
+    emit(live(3, 3))
+    expect(calls).toEqual(['unsub'])
+    expect(st.events).toHaveLength(3)
+  })
+
+  it('stop before the snapshot resolves applies nothing; subscribe/older failures leave the view empty', async () => {
+    const a = mk()
+    let n = 0
+    createFeed(a.api, ref, () => n++).stop()
+    await tick()
+    expect(n).toBe(0)
+    const b = mk({ subscribe: async () => Promise.reject(new Error('x')) })
+    createFeed(b.api, ref, () => n++)
+    const c = mk({ older: async () => Promise.reject(new Error('x')) })
+    const f = createFeed(c.api, ref, () => n++)
+    await tick()
+    f.older()
+    await tick()
+    f.older() // busy flag was cleared
+    expect(n).toBe(1)
   })
 })

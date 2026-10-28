@@ -107,12 +107,14 @@ export function openSession(file: string, sessionId: string, accountId: string, 
     },
     first.end,
     () => {
-      // the file shrank (rewritten): start over; the renderer treats this snapshot as a reset and the new content follows as live batches
+      // the file shrank (rewritten): start over with a bounded snapshot of the new content (the renderer replaces its events) and resume the tail after it
       orphans.clear()
       tools.clear()
       live = createParser(orphans, tools)
-      pos = 0
-      onBatch({ accountId, sessionId, seq: ++seq, events: [], older: null })
+      const p = readPage(file, undefined, orphans, PAGE, tools)
+      pos = p.end
+      onBatch({ ...page(p), seq: ++seq })
+      return p.end
     }
   )
   const page = (p: Page, extra: object = {}): TBatch => ({ accountId, sessionId, ...extra, events: p.events, ...(p.meta ? { meta: p.meta } : {}), older: p.older })

@@ -206,5 +206,4 @@ export function createParser(orphans: Map<string, Done> = new Map(), tools: Map<
   }
 }
 
-/** A tool_use of AskUserQuestion / ExitPlanMode with no result yet: the CLI is waiting for the user (the only reliable wait signal). */
-export const isPendingAsk = (e: TEvent): boolean => e.kind === 'tool' && e.status === 'pending' && (e.name === 'AskUserQuestion' || e.name === 'ExitPlanMode')
+export { isPendingAsk } from '../../shared/transcript'

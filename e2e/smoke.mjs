@@ -33,10 +33,22 @@ session() {
     for i in $(seq 70); do [ -f "$STUB_FIXTURE" ] && sh -c "$cmd" < "$STUB_FIXTURE" > "${tmp}/statusline-out.$(basename "$CLAUDE_CONFIG_DIR")"; sleep 1; done
   else sleep 60; fi
 }
+# scripted transcript (F6.2): with STUB_SCRIPT set, a new/resumed session appends the script's lines to its transcript over time, like the CLI writing blocks as they happen
+script() {
+  d="$CLAUDE_CONFIG_DIR/projects/$STUB_ENC"; mkdir -p "$d/$1/subagents"
+  sed "s/__SID__/$1/g" "$STUB_AGENT" > "$d/$1/subagents/agent-a1b2c3d4e5f60718.jsonl"
+  while IFS= read -r l; do printf '%s\\n' "$l" | sed "s/__SID__/$1/g" >> "$d/$1.jsonl"; sleep "\${STUB_GAP:-0.4}"; done < "$STUB_SCRIPT"
+}
+# with STUB_KEYS set the session logs every line typed into its pty and its size on start and on every resize (SIGWINCH)
+keys() {
+  trap 'echo "SIZE:$(stty size)" >> "$STUB_KEYS"' WINCH
+  echo "SIZE:$(stty size)" >> "$STUB_KEYS"
+  for i in $(seq 120); do read -t 1 -r l && echo "KEY:$l" >> "$STUB_KEYS"; done
+}
 case "$1 $2" in
   "auth status") [ -n "$CLAUDE_CONFIG_DIR" ] && touch "$CLAUDE_CONFIG_DIR/.claude.json"; echo "{\\"loggedIn\\":true,\\"email\\":\\"\${STUB_EMAIL:-test@example.com}\\",\\"subscriptionType\\":\\"max\\"}" ;;
   "auth login") sleep 1; echo "Paste code here"; read -t 20 -r code; echo "CODE:$code" >> "${log}"; exit 0 ;;
-  "--session-id "*|"--resume "*) sleep 1; echo "Claude Code (stub): sesión interactiva"; session ;;
+  "--session-id "*|"--resume "*) [ -n "$STUB_SCRIPT" ] && script "$2" & sleep 1; echo "Claude Code (stub): sesión interactiva"; if [ -n "$STUB_KEYS" ]; then keys; else session; fi ;;
   *) echo "2.1.0 (Claude Code)" ;;
 esac
 `
@@ -111,6 +123,37 @@ const sidebarFits = async (page, state) => {
   })
   assert.deepEqual(sx, [0, 0, 0, 0], `focus pass scrolled the shell (${state})`)
 }
+
+// the main area stays inside its box and nothing overflows its own box unless it truncates (xterm, native <select>, daisyUI .tab and [data-scroll] boxes, which scroll on purpose, are exempt)
+const mainOverflow = (page, withTab) =>
+  page.evaluate((withTab) => {
+    const m = document.querySelector('main')
+    const out = []
+    if (m.scrollWidth > m.clientWidth) out.push(`main scrollWidth ${m.scrollWidth} > ${m.clientWidth}`)
+    const mr = m.getBoundingClientRect()
+    const isBox = (el) => /flex|grid/.test(getComputedStyle(el).display)
+    for (const el of m.querySelectorAll('*')) {
+      if (getComputedStyle(el).visibility === 'hidden' || !el.clientWidth) continue
+      const r = el.getBoundingClientRect()
+      if (r.right > mr.right + 0.5) out.push(`${el.tagName} right ${Math.round(r.right)} > ${Math.round(mr.right)}`)
+      if (el.closest('.xterm, [data-scroll]') || el.tagName === 'SELECT' || el.classList.contains('tab')) continue // exempt: xterm's own scrolling viewport; native <select> (scrollWidth = option width); daisyUI .tab (tabs-lift corner pseudo-elements stick out ~8px, children are still checked against main's box)
+      const cs = getComputedStyle(el)
+      if (el.scrollWidth > el.clientWidth + 1 && (cs.textOverflow !== 'ellipsis' || isBox(el))) out.push(`overflow ${el.tagName}.${String(el.className).slice(0, 40)} ${el.scrollWidth}>${el.clientWidth}`)
+    }
+    // account-label badges: the text keeps its start and ends in a real ellipsis
+    const badges = m.querySelectorAll('.badge.max-w-28, .badge.max-w-40')
+    if (withTab && badges.length !== 2) out.push(`expected 2 account-label badges (tab bar + header strip), found ${badges.length}`)
+    for (const b of badges) {
+      const sp = b.querySelector('span.truncate')
+      if (!sp) { out.push(`badge without inner truncate span: ${b.textContent}`); continue }
+      const cs = getComputedStyle(sp), bs = getComputedStyle(b)
+      const inner = b.getBoundingClientRect().left + parseFloat(bs.paddingLeft) + parseFloat(bs.borderLeftWidth)
+      if (cs.textOverflow !== 'ellipsis' || isBox(sp)) out.push(`badge span not ellipsising: ${b.textContent}`)
+      if (sp.getBoundingClientRect().left < inner - 0.5) out.push(`badge text clipped on the left: ${b.textContent}`)
+      if (sp.scrollWidth <= sp.clientWidth) out.push(`badge label not long enough to truncate: ${b.textContent}`)
+    }
+    return out
+  }, !!withTab)
 
 // ---- scenario 1: claude present, candidate dirs, onboarding -> dashboard ----
 {
@@ -713,34 +756,7 @@ const sidebarFits = async (page, state) => {
     const mainFits = async (size, withTab) => {
       const what = withTab ? 'tab open' : 'empty state'
       await (withTab ? page.getByRole('tab').first() : page.getByRole('button', { name: /^x{100}/ }).last()).waitFor({ timeout: t })
-      const bad = await page.evaluate((withTab) => {
-        const m = document.querySelector('main')
-        const out = []
-        if (m.scrollWidth > m.clientWidth) out.push(`main scrollWidth ${m.scrollWidth} > ${m.clientWidth}`)
-        const mr = m.getBoundingClientRect()
-        const isBox = (el) => /flex|grid/.test(getComputedStyle(el).display)
-        for (const el of m.querySelectorAll('*')) {
-          if (getComputedStyle(el).visibility === 'hidden' || !el.clientWidth) continue
-          const r = el.getBoundingClientRect()
-          if (r.right > mr.right + 0.5) out.push(`${el.tagName} right ${Math.round(r.right)} > ${Math.round(mr.right)}`)
-          if (el.closest('.xterm') || el.tagName === 'SELECT' || el.classList.contains('tab')) continue // exempt: xterm's own scrolling viewport; native <select> (scrollWidth = option width); daisyUI .tab (tabs-lift corner pseudo-elements stick out ~8px, children are still checked against main's box)
-          const cs = getComputedStyle(el)
-          if (el.scrollWidth > el.clientWidth + 1 && (cs.textOverflow !== 'ellipsis' || isBox(el))) out.push(`overflow ${el.tagName}.${String(el.className).slice(0, 40)} ${el.scrollWidth}>${el.clientWidth}`)
-        }
-        // account-label badges: the text keeps its start and ends in a real ellipsis
-        const badges = m.querySelectorAll('.badge.max-w-28, .badge.max-w-40')
-        if (withTab && badges.length !== 2) out.push(`expected 2 account-label badges (tab bar + header strip), found ${badges.length}`)
-        for (const b of badges) {
-          const sp = b.querySelector('span.truncate')
-          if (!sp) { out.push(`badge without inner truncate span: ${b.textContent}`); continue }
-          const cs = getComputedStyle(sp), bs = getComputedStyle(b)
-          const inner = b.getBoundingClientRect().left + parseFloat(bs.paddingLeft) + parseFloat(bs.borderLeftWidth)
-          if (cs.textOverflow !== 'ellipsis' || isBox(sp)) out.push(`badge span not ellipsising: ${b.textContent}`)
-          if (sp.getBoundingClientRect().left < inner - 0.5) out.push(`badge text clipped on the left: ${b.textContent}`)
-          if (sp.scrollWidth <= sp.clientWidth) out.push(`badge label not long enough to truncate: ${b.textContent}`)
-        }
-        return out
-      }, !!withTab)
+      const bad = await mainOverflow(page, withTab)
       assert.deepEqual(bad, [], `main content overflows with an unbroken session title / long label (${size[0]}px, ${what})`)
     }
     const states = async (size) => {
@@ -770,6 +786,199 @@ const sidebarFits = async (page, state) => {
   }
 }
 
+// ---- scenario 9: conversation view (F6.2): a scripted transcript is written live by the stub; cards, diffs, inert markdown, split layout, toggle, scrolling, fits, light/dark shots ----
+{
+  const d = setup('nine')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  const proj = join(d.home, 'chat-app')
+  mkdirSync(proj)
+  const cwd = realpathSync(proj)
+  const cfg = join(d.home, 'cfg-chat')
+  mkdirSync(cfg)
+  writeFileSync(join(cfg, '.claude.json'), '{}')
+  mkdirSync(d.relayHome, { recursive: true })
+  writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([cwd]))
+  writeFileSync(join(d.relayHome, 'accounts.json'), JSON.stringify([{ id: 'cccccccc', label: 'Personal CarlosDev con una etiqueta de cuenta muy larga', provider: 'claude', configDir: cfg }]))
+  // synthetic transcript (the shapes of tests/fixtures/transcript); __SID__ is replaced by the stub
+  let n = 0
+  const ts = () => new Date(Date.UTC(2026, 0, 1, 12, 0, n++)).toISOString()
+  const common = (type) => ({ parentUuid: null, isSidechain: false, userType: 'external', cwd, sessionId: '__SID__', version: '2.1.312', gitBranch: 'main', uuid: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, timestamp: ts(), type })
+  const user = (content, extra = {}) => ({ ...common('user'), message: { role: 'user', content }, ...extra })
+  const asst = (mid, idx, block, extra = {}) => ({ ...common('assistant'), requestId: `req_${mid}`, apiBlockIndex: idx, ...extra, message: { id: `msg_${mid}`, type: 'message', role: 'assistant', model: 'claude-fake-1', content: [block], stop_reason: 'tool_use', usage: { input_tokens: 3, output_tokens: 5 } } })
+  const use = (mid, id, name, input) => asst(mid, 0, { type: 'tool_use', id, name, input })
+  const res = (id, content, toolUseResult, isErr = false) => user([{ type: 'tool_result', tool_use_id: id, content, ...(isErr ? { is_error: true } : {}) }], toolUseResult === undefined ? {} : { toolUseResult })
+  const hello = ['```ts', 'export const suma = (a: number, b: number) => a + b', '// <script>window.__pwn = 0</script>', '```']
+  const long = Array.from({ length: 14 }, (_, i) => `${i + 1}. Paso ${i + 1} del plan sintético`).join('\n')
+  const script = [
+    { type: 'ai-title', aiTitle: 'Chat sintético', sessionId: '__SID__' },
+    user('Crea una función suma y pruébala.'),
+    asst('a1', 0, { type: 'thinking', thinking: '', signature: 'x' }, { thinkingDurationMs: 4000 }),
+    asst('a1', 1, { type: 'text', text: `Voy a **crear** la función y probarla.\n\n${hello.join('\n')}\n\n${long}` }),
+    asst('a2', 0, { type: 'text', text: 'Sin HTML crudo: <script>window.__pwn = 1</script> y <img src=x onerror="window.__pwn = 2"> y [enlace](javascript:window.__pwn=3) y ![img](https://example.com/x.png)' }),
+    use('a3', 'tb1', 'Bash', { command: 'bun test' }),
+    res('tb1', 'SALIDA-OK-SINTETICA', { stdout: 'SALIDA-OK-SINTETICA', stderr: '', interrupted: false }),
+    use('a4', 'tb2', 'Bash', { command: 'false' }),
+    res('tb2', 'FALLO-SINTETICO', { stdout: '', stderr: 'FALLO-SINTETICO', interrupted: false }, true),
+    use('a5', 'te1', 'Edit', { file_path: `${cwd}/suma.ts`, old_string: 'a', new_string: 'b' }),
+    res('te1', 'edited', { filePath: `${cwd}/suma.ts`, structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: ['-export const a = 1', '+export const a = 2', '+export const b = 3'] }] }),
+    use('a6', 'tw1', 'Write', { file_path: `${cwd}/nuevo.ts`, content: 'let b = 1\n' }),
+    res('tw1', 'created', { type: 'create', filePath: `${cwd}/nuevo.ts`, content: 'let b = 1\n', structuredPatch: [] }),
+    use('a7', 'tr1', 'Read', { file_path: `${cwd}/suma.ts` }),
+    res('tr1', 'uno\ndos\ntres', 'uno\ndos\ntres'),
+    use('a8', 'tf1', 'WebFetch', { url: 'https://docs.example.com/guia?x=1', prompt: 'resume' }),
+    res('tf1', 'resumen', 'resumen'),
+    use('a9', 'tg1', 'Agent', { description: 'Explora el repo', subagent_type: 'general', prompt: 'busca' }),
+    res('tg1', 'Async agent launched', { status: 'async_launched', agentId: 'a1b2c3d4e5f60718' }),
+    use('a10', 'tk1', 'TodoWrite', { todos: [{ content: 'tarea sintética', status: 'pending' }] }),
+    res('tk1', 'ok', 'ok'),
+    { ...common('system'), subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata: { trigger: 'auto', preTokens: 120000, postTokens: 8000 } },
+    { ...common('system'), subtype: 'turn_duration', durationMs: 64000 },
+    use('a11', 'tq1', 'AskUserQuestion', { questions: [{ question: '¿Sigo con las pruebas?', header: 'Sigo', multiSelect: false, options: [{ label: 'Sí', description: 'continúa' }, { label: 'No', description: 'detente' }] }] })
+  ]
+  const sub = [
+    { ...common('user'), isSidechain: true, message: { role: 'user', content: 'busca' } },
+    { ...asst('s1', 0, { type: 'text', text: 'Hallazgo del subagente.' }), isSidechain: true }
+  ]
+  const lines = (a) => a.map((x) => JSON.stringify(x)).join('\n') + '\n'
+  writeFileSync(join(tmp, 'chat-script.jsonl'), lines(script))
+  writeFileSync(join(tmp, 'chat-agent.jsonl'), lines(sub))
+  const app = await launch(d, { STUB_SCRIPT: join(tmp, 'chat-script.jsonl'), STUB_AGENT: join(tmp, 'chat-agent.jsonl'), STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-'), STUB_GAP: '0.3', STUB_KEYS: join(tmp, 'chat-keys.log') })
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.getByTestId('account-card').first().waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    const chat = page.getByTestId('chat-pane')
+    const cards = chat.getByTestId('tool-card')
+    await chat.getByText('Crea una función suma y pruébala.').waitFor({ timeout: t })
+    // live: the first message shows up before the later blocks are written
+    assert.equal(await cards.filter({ hasText: 'suma.ts' }).count(), 0, 'the Edit card does not exist yet when the first message appears')
+    // split layout: chat left, terminal right, both visible
+    const term = page.getByTestId('terminal-pane')
+    await term.locator('.xterm').waitFor({ timeout: t })
+    const [cb, tb] = await Promise.all([chat.boundingBox(), term.boundingBox()])
+    assert.ok(cb && tb && cb.x < tb.x && cb.width > 200 && tb.width > 200, 'chat on the left, terminal on the right')
+
+    // the terminal takes keystrokes in Dividida: what is typed reaches the pty
+    const keys = () => (existsSync(join(tmp, 'chat-keys.log')) ? readFileSync(join(tmp, 'chat-keys.log'), 'utf8').split('\n') : [])
+    const sizes = () => keys().filter((l) => l.startsWith('SIZE:')).map((l) => Number(l.split(' ')[1]))
+    const poll = async (fn, what) => {
+      for (let i = 0; i < 50; i++) {
+        if (fn()) return
+        await new Promise((r) => setTimeout(r, 200))
+      }
+      assert.fail(`timeout: ${what}`)
+    }
+    await poll(() => sizes().length, 'the stub reported its pty size')
+    await term.locator('.xterm').click()
+    await page.keyboard.type('hola-marker')
+    await page.keyboard.press('Enter')
+    await poll(() => keys().includes('KEY:hola-marker'), 'the typed marker reached the pty')
+    const colsSplit = sizes().at(-1)
+
+    await chat.getByText('Pensó 4 s').waitFor({ timeout: t })
+    await chat.getByText('Voy a crear la función y probarla.').waitFor({ timeout: t })
+    await chat.locator('pre code').first().waitFor({ timeout: t })
+    assert.ok(await chat.locator('pre code .hljs-keyword').count(), 'code is highlighted (token spans)')
+    await chat.getByRole('button', { name: 'Copiar código' }).first().waitFor({ timeout: t })
+    // bash: command in the header, output folded; the error card shows its state
+    const ok = cards.filter({ hasText: 'bun test' })
+    await ok.waitFor({ timeout: t })
+    assert.equal(await ok.getByText('SALIDA-OK-SINTETICA').isVisible(), false, 'stdout is folded')
+    await ok.locator('summary').first().click()
+    await ok.getByText('Salida', { exact: true }).click()
+    await ok.getByText('SALIDA-OK-SINTETICA').waitFor({ timeout: t })
+    const bad = cards.filter({ hasText: 'false' }).first()
+    await bad.getByText('error', { exact: true }).waitFor({ timeout: t })
+    await bad.getByText('FALLO-SINTETICO').waitFor({ timeout: t }) // errors open by default
+    // edit: coloured diff with counts; write: created
+    const edit = cards.filter({ hasText: 'suma.ts' }).first()
+    await edit.getByText('+export const b = 3').waitFor({ timeout: t })
+    assert.match(await edit.getByTestId('diff').textContent(), /\+2.*−1/)
+    const head = edit.getByTestId('diff').locator('span').first()
+    assert.equal(await head.textContent(), 'suma.ts', 'diff header is relative to the project')
+    assert.equal(await head.getAttribute('title'), `${cwd}/suma.ts`, 'absolute path in the title')
+    const addBg = await edit.getByText('+export const b = 3').evaluate((el) => getComputedStyle(el).backgroundColor)
+    const delBg = await edit.getByText('-export const a = 1').evaluate((el) => getComputedStyle(el).backgroundColor)
+    assert.ok(addBg !== delBg && addBg !== 'rgba(0, 0, 0, 0)' && delBg !== 'rgba(0, 0, 0, 0)', `diff lines are coloured (${addBg} / ${delBg})`)
+    const wr = cards.filter({ hasText: 'nuevo.ts' }).first()
+    await wr.getByText('creado', { exact: true }).waitFor({ timeout: t })
+    await cards.filter({ hasText: 'docs.example.com' }).first().waitFor({ timeout: t })
+    await cards.filter({ hasText: 'TodoWrite' }).first().waitFor({ timeout: t }) // generic card
+    // subagent: lazy nested thread
+    const ag = cards.filter({ hasText: 'Explora el repo' }).first()
+    await ag.waitFor({ timeout: t })
+    assert.equal(await chat.getByText('Hallazgo del subagente.').count(), 0, 'the subagent thread is not loaded until opened')
+    await ag.locator('summary').first().click()
+    await ag.getByTestId('subthread').getByText('Hallazgo del subagente.').waitFor({ timeout: t })
+    // notices and the pending ask
+    await chat.getByText(/Conversación compactada · 120k → 8k tokens/).waitFor({ timeout: t })
+    await chat.getByText('Turno de 1 min 4 s').waitFor({ timeout: t })
+    const q = cards.filter({ hasText: 'AskUserQuestion' }).first()
+    await q.getByText('Esperando tu respuesta en la terminal.').waitFor({ timeout: t })
+    await q.getByText('¿Sigo con las pruebas?').first().waitFor({ timeout: t })
+
+    // security: nothing from the transcript became markup or a navigation
+    await chat.getByText('<script>window.__pwn = 1</script>').first().waitFor({ timeout: t })
+    assert.equal(await chat.locator('script, img, iframe, a[href], [onerror]').count(), 0, 'no script/img/iframe/link/handler elements in the chat')
+    assert.equal(await page.evaluate(() => window.__pwn), undefined, 'no injected script ran')
+    assert.equal(await chat.getByText('enlace').evaluate((el) => el.tagName), 'SPAN', 'links are inert')
+
+    // follow the end, then scroll up: "Ir al último" appears and works
+    const box = chat.getByTestId('conversation').locator('> div').first()
+    const dist = () => box.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)
+    await page.waitForTimeout(500)
+    assert.ok((await dist()) < 60, 'the view follows the end')
+    assert.equal(await chat.getByRole('button', { name: 'Ir al último' }).count(), 0)
+    assert.ok(await box.evaluate((el) => el.scrollHeight > el.clientHeight + 200), 'the transcript is taller than the pane')
+    await box.evaluate((el) => (el.scrollTop = 0))
+    const last = chat.getByRole('button', { name: 'Ir al último' })
+    await last.waitFor({ timeout: t })
+    await last.click()
+    await last.waitFor({ state: 'hidden', timeout: t })
+    assert.ok((await dist()) < 60)
+
+    // fits at 1280 and 900 with the chat open
+    for (const size of [[1280, 800], [900, 600]]) {
+      await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].setSize(s[0], s[1]), size)
+      await page.waitForTimeout(500)
+      assert.deepEqual(await mainOverflow(page, true), [], `main content overflows with the chat open (${size[0]}px)`)
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.waitForTimeout(500)
+
+    // toggle: Terminal only (chat gone, terminal wider), Dividida again (chat back with its content)
+    const wSplit = (await term.boundingBox()).width
+    await page.getByRole('button', { name: 'Terminal', exact: true }).click()
+    await chat.waitFor({ state: 'detached', timeout: t })
+    assert.ok((await term.boundingBox()).width > wSplit + 100, 'the terminal takes the whole area')
+    await poll(() => sizes().at(-1) > colsSplit, 'the pty was resized wider in Terminal mode')
+    const colsFull = sizes().at(-1)
+    await page.getByRole('button', { name: 'Dividida', exact: true }).click()
+    await chat.getByText('Crea una función suma y pruébala.').waitFor({ timeout: t })
+    await chat.getByText(/Conversación compactada/).waitFor({ timeout: t })
+    assert.ok((await term.locator('.xterm').boundingBox()).width > 200, 'the terminal stays visible in Dividida')
+    await poll(() => sizes().at(-1) < colsFull, 'the pty was resized narrower again in Dividida')
+
+    // light / dark shots (the OS theme drives relay-light / relay-dark)
+    for (const scheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme: scheme })
+      await page.waitForTimeout(600)
+      await ag.waitFor({ timeout: t })
+      await box.evaluate((el) => (el.scrollTop = 0))
+      await page.waitForTimeout(300)
+      await page.screenshot({ path: join(shots, `chat-${scheme}-top.png`) })
+      await page.getByRole('button', { name: 'Ir al último' }).click()
+      await page.waitForTimeout(300)
+      await page.screenshot({ path: join(shots, `chat-${scheme}.png`) })
+    }
+    await page.emulateMedia({ colorScheme: null })
+    assert.ok(!existsSync(join(d.home, '.claude')), 'nothing written outside the temp HOME')
+  } finally {
+    await app.close()
+  }
+}
 // ---- scenario 7: only Codex installed -> the onboarding account dialog defaults to Codex ----
 {
   const d = setup('seven')

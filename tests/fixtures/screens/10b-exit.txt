@@ -1,0 +1,4 @@
+
+Resume this session with:
+claude --resume 00000000-0000-4000-8000-000000000000
+--cursor y=3 x=0 bracketedPaste=false exited={"exitCode":0,"signal":0}

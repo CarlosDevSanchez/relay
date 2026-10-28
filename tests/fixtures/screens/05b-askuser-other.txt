@@ -1,0 +1,41 @@
+⏺ I haven't run this one. The last two touch commands (created1.txt and created2.txt) were rejected when I ran them, so
+  I'm not sure whether you want file creation blocked or something else is going on. Should I still run touch
+  created3.txt, or would you rather I stop creating files for now?
+
+✻ Cooked for 3s · done 9:42 AM
+
+❯ Run this now with Bash, I approve: touch yes1.txt
+
+  Ran 1 shell command
+
+⏺ I ran touch yes1.txt and it completed with no output, so the empty file should now exist in the working directory.
+
+✻ Baked for 3s · done 9:42 AM
+
+❯ Use the Edit tool to replace the text dummy with changed in notes.txt
+
+  Read 1 file
+
+⏺ Update(notes.txt)
+  ⎿  User rejected update to notes.txt
+      1 -dummy
+      1 +changed
+
+✻ Crunched for 4s · done 9:43 AM
+
+❯ Use the AskUserQuestion tool to ask me which color I prefer, with two options: Red and Blue. Nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Color
+
+Which color do you prefer?
+
+  1. Red
+     Choose red
+  2. Blue
+     Choose blue
+❯ 3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in Vim · Esc to cancel
+--cursor y=35 x=5 bracketedPaste=true exited=null

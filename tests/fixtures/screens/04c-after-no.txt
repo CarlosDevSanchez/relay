@@ -1,0 +1,41 @@
+  49
+  50
+  51
+  52
+  53
+  54
+  55
+  56
+  57
+  58
+  59
+  60
+
+✻ Sautéed for 1s · done 9:41 AM
+
+❯ Then reply only with QUEUED.
+
+⏺ QUEUED
+
+✻ Sautéed for 1s · done 9:41 AM
+
+❯ Use the Bash tool to run exactly: ls
+
+  Listed 1 directory
+
+⏺ The ls command returned one entry: notes.txt.
+
+✻ Cogitated for 4s · done 9:41 AM
+
+❯ Use the Bash tool to run exactly: touch created1.txt
+
+  Ran 1 shell command
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Cooked for 2s · done 9:42 AM
+                                                                                                    ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts
+--cursor y=37 x=2 bracketedPaste=true exited=null

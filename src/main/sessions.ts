@@ -1,6 +1,7 @@
 import { closeSync, openSync, readSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Account, SessionInfo } from '../shared/types'
+import { listCodexSessions } from './codex'
 import { claudeProjectDir } from './paths'
 import { isSessionId } from './validate'
 
@@ -35,20 +36,35 @@ function head(file: string): string {
   }
 }
 
-// ponytail: Claude only; Codex session layout is unverified so it lists nothing.
-export function listSessions(accounts: Account[], cwd: string): SessionInfo[] {
-  const out: SessionInfo[] = []
+// unchanged transcripts (same size + mtime) keep their title: the sidebar re-lists every few seconds
+const titles = new Map<string, { size: number; mtimeMs: number; title: string }>()
+function titleOf(p: string, size: number, mtimeMs: number): string {
+  const c = titles.get(p)
+  if (c && c.size === size && c.mtimeMs === mtimeMs) return c.title
+  const title = sessionTitle(head(p))
+  titles.set(p, { size, mtimeMs, title })
+  return title
+}
+
+/** `only` (lowercase session ids) limits Claude transcripts to those ids before any file is opened. */
+export function listSessions(accounts: Account[], cwd: string, only?: ReadonlySet<string>): SessionInfo[] {
+  const out: SessionInfo[] = listCodexSessions(accounts, cwd)
   for (const a of accounts.filter((x) => x.provider === 'claude')) {
     const dir = claudeProjectDir(a.configDir, cwd)
     let files: string[]
     try {
-      files = readdirSync(dir).filter((f) => f.endsWith('.jsonl') && isSessionId(f.slice(0, -6)))
+      files = readdirSync(dir).filter((f) => f.endsWith('.jsonl') && isSessionId(f.slice(0, -6)) && (!only || only.has(f.slice(0, -6).toLowerCase())))
     } catch {
       continue
     }
     for (const f of files) {
       const p = join(dir, f)
-      out.push({ id: f.slice(0, -6), title: sessionTitle(head(p)), mtimeMs: statSync(p).mtimeMs, accountId: a.id })
+      try {
+        const st = statSync(p)
+        out.push({ id: f.slice(0, -6), title: titleOf(p, st.size, st.mtimeMs), mtimeMs: st.mtimeMs, accountId: a.id })
+      } catch {
+        // vanished between readdir and stat
+      }
     }
   }
   // same id on several accounts after a handoff: only the newest copy

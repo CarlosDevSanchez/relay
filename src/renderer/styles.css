@@ -1,4 +1,90 @@
 @import 'tailwindcss';
-html, body, #root { height: 100%; margin: 0; background: #1f1e1d; color: #e8e6e3; font-family: system-ui, sans-serif; }
+@plugin "daisyui" {
+  themes: false;
+  logs: false;
+}
+
+/* Relay themes (own palette: brand teal accent on cool navy-tinted neutrals; logo teal #69C4CF on dark (dark text #0b1f2a on it = 8.4:1), darker teal #0E7C8C on light (white text 4.9:1); logo navy #1A262C). relay-light is the default theme; relay-dark (prefersdark) is used when the OS prefers dark. */
+@plugin "daisyui/theme" {
+  name: 'relay-light';
+  default: true;
+  color-scheme: light;
+  --color-base-100: oklch(99% 0.004 240);
+  --color-base-200: oklch(96.5% 0.007 240);
+  --color-base-300: oklch(91% 0.01 240);
+  --color-base-content: oklch(27% 0.02 240);
+  --color-primary: #0e7c8c;
+  --color-primary-content: #ffffff;
+  --color-secondary: oklch(52% 0.1 255);
+  --color-secondary-content: oklch(97% 0.01 255);
+  --color-accent: oklch(58% 0.13 195);
+  --color-accent-content: oklch(97% 0.01 195);
+  --color-neutral: oklch(32% 0.02 240);
+  --color-neutral-content: oklch(96% 0.006 240);
+  --color-info: oklch(62% 0.13 240);
+  --color-info-content: oklch(98% 0.01 240);
+  --color-success: oklch(62% 0.15 155);
+  --color-success-content: oklch(98% 0.01 155);
+  --color-warning: oklch(78% 0.15 85);
+  --color-warning-content: oklch(28% 0.06 80);
+  --color-error: oklch(59% 0.19 25);
+  --color-error-content: oklch(98% 0.01 25);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+@plugin "daisyui/theme" {
+  name: 'relay-dark';
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: oklch(24% 0.012 240);
+  --color-base-200: oklch(20.5% 0.011 240);
+  --color-base-300: oklch(31% 0.014 240);
+  --color-base-content: oklch(92% 0.012 240);
+  --color-primary: #69c4cf;
+  --color-primary-content: #0b1f2a;
+  --color-secondary: oklch(72% 0.11 255);
+  --color-secondary-content: oklch(20% 0.03 255);
+  --color-accent: oklch(76% 0.11 195);
+  --color-accent-content: oklch(20% 0.03 195);
+  --color-neutral: oklch(33% 0.015 240);
+  --color-neutral-content: oklch(94% 0.008 240);
+  --color-info: oklch(74% 0.12 240);
+  --color-info-content: oklch(20% 0.03 240);
+  --color-success: oklch(76% 0.15 155);
+  --color-success-content: oklch(20% 0.04 155);
+  --color-warning: oklch(82% 0.15 85);
+  --color-warning-content: oklch(25% 0.05 80);
+  --color-error: oklch(70% 0.17 25);
+  --color-error-content: oklch(20% 0.04 25);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
+
+html, body, #root { height: 100%; margin: 0; overflow: hidden; } /* the app shell never scrolls: tooltips / closed menus laid out past an edge must not widen the document */
+body { background: var(--color-base-100); color: var(--color-base-content); font-family: system-ui, sans-serif; font-size: 13px; }
 .drag { -webkit-app-region: drag; }
 .nodrag { -webkit-app-region: no-drag; }
+
+/* tab switch: the terminal fades in when its pane is shown */
+@keyframes relay-fade { from { opacity: 0 } to { opacity: 1 } }
+.fade-in { animation: relay-fade 0.18s ease-out; }
+.menu details { overflow: visible; } /* daisyUI uses `hidden`: a scrollable box (focus / scrollIntoView scrolled the project rows out of view) that also clipped the kebab menus */
+.menu-active .btn-ghost { --btn-fg: currentColor; color: currentColor; } /* kebab on the active (filled) project row */
+.menu-active .btn-ghost:hover { background-color: color-mix(in oklab, currentColor 18%, transparent); }
+.lift { transition: box-shadow 0.15s, border-color 0.15s, background-color 0.15s; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}

@@ -45,28 +45,30 @@ App de escritorio (Electron + React + daisyUI + xterm + node-pty, con Bun) que e
 | `25b1e55` | F5 | Codex del mismo proveedor: cuentas, login, sesiones (solo hilos `codex-tui`), handoff, límite, `AGENTS.md` compartido; restos de F4.1 |
 | `63fb289` | F5.1 | Barras de consumo oficial (status line), historial solo de Relay, logo conectado |
 | `ab08f7a` | F5.2 | Cards compactas y secciones plegables (+ restos de F5.1) |
-| `5225cbc` | F5.2 fix | Desbordes del sidebar con datos reales de cuentas |
+| `3fa471f` | F5.2 fix | Desbordes del sidebar con datos reales de cuentas |
+| `3b3fa80` | F5.2 fix | Badge de proveedor corto, truncado en el área principal, contornos de foco |
 
 Estado al cierre de F5: 100 tests y e2e con 5 escenarios en verde; auditoría PASS.
 
 ## 5. En curso
+- **MVP cerrado y publicado** en https://github.com/CarlosDevSanchez/relay. El PR #1 (`feat/mvp` → `dev`) está **fusionado** (`6044db6`). El PR #2 (`dev` → `main`) está **abierto**, sin conflictos (`gh pr view 2`: OPEN, CLEAN), a la espera de la aprobación del dueño.
+- **F6.0 · Investigación de la vista enriquecida (rama `feat/f6`)**: hecha (sin commitear aún en `feat/f6`). Informe en [docs/spikes/F6.md](spikes/F6.md) (462 transcripts reales de Claude, 24 versiones del CLI; fixtures sintéticos en `tests/fixtures/transcript/`) y plan actualizado en [docs/design/F6-vista-enriquecida.md](design/F6-vista-enriquecida.md). Hallazgos: el CLI escribe una línea por bloque; no hay señal fiable de aprobaciones pendientes (se descartan los botones Aprobar/Rechazar); `quotaLimits` solo aparece al rechazar; `TodoWrite` sin datos reales; Codex sin rollouts reales en esta máquina. Decisiones del usuario: identidad visual lo más similar posible a la app de Claude Code sin replicarla ni usar sus marcas, modo por defecto Conversación, markdown/resaltado a elegir en F6.1. Siguiente: F6.1 (parser y modelo).
 - **F5.2 · Cards compactas y secciones plegables**: hecho y auditado (PASS). MINOR abierto: la línea corta del status line puede tomar un % ajeno si el CLI cambia el orden de las claves (solo afecta al texto del CLI, no a las cards).
   - Card compacta por defecto (punto de estado, nombre, badges de plan y proveedor, dos barras finas 5h/7d con el % y el reinicio en tooltip); clic o chevron la expande (email, filas "Sesión 5h"/"Semana", tokens, notas de memoria compartida). Cuenta limitada o sobre el umbral: punto y barra en warning/error aunque esté compacta.
   - "Cuentas" y "Proyectos" se pliegan (plegado de cuentas = un punto por cuenta con tooltip). Estado en `localStorage` (preferencia de UI, con try/catch). El e2e comprueba que ningún elemento del sidebar se sale de su caja (compacto, expandido, plegado y ventana mínima de 900 px).
   - Restos de la auditoría F5.1: escrituras al registro best-effort, listado filtrado por el registro y títulos en caché (tamaño+mtime), `auth status` solo cuando cambia el estado 100%, el status line del usuario conserva `refreshInterval`/`padding` (se ejecuta con `/bin/sh`), un umbral cruzado con Relay cerrado no se avisa (a propósito), `chmod 0700` del dir de estado, ruta del icono empaquetado, `preview.png` a 1200 px, colores de marca teal `#69C4CF` / navy `#1A262C`.
-  - Seguimiento (sin commitear): badge de proveedor corto "CC"/"CX" siempre visible (nombre completo en el tooltip); los badges de cuenta en las pestañas y en la franja de la sesión se truncan con elipsis conservando el inicio; las sesiones recientes apilan el título sobre los metadatos; contorno de foco en los kebabs y los puntos; el e2e `mainFits` también comprueba con una pestaña abierta.
+  - Seguimiento (commit `3b3fa80`): badge de proveedor corto "CC"/"CX" siempre visible (nombre completo en el tooltip); los badges de cuenta en las pestañas y en la franja de la sesión se truncan con elipsis conservando el inicio; las sesiones recientes apilan el título sobre los metadatos; contorno de foco en los kebabs y los puntos; el e2e `mainFits` también comprueba con una pestaña abierta.
   - NITs abiertos: el select "Cuenta" del estado vacío mete las etiquetas largas bajo su flecha; `min-w-0` en el li/button de la lista de recientes puede no hacer nada.
   - Para la fase de empaquetado: el icono de la ventana empaquetada se busca en `process.resourcesPath/icon.png` (hay que copiarlo allí con `extraResources`); en desarrollo, `<proyecto>/build/icon.png`.
 
 ## 6. Pendiente para cerrar el MVP
-1. F5.1 (`63fb289`) y F5.2 (`ab08f7a`, `5225cbc`) ya están en commit.
-2. **Prueba manual del usuario** desde un worktree fijado al último commit. Puntos clave que solo se pueden comprobar con cuentas reales:
+1. F5.1 (`63fb289`) y F5.2 (`ab08f7a`, `3fa471f`, `3b3fa80`) ya están en commit; el repo está publicado y el PR #1 fusionado.
+2. **Aprobación y merge del PR #2** (`dev` → `main`) por el dueño (rama protegida: PR más aprobación del dueño; admin puede saltarla, `enforce_admins` desactivado).
+3. **Prueba manual del usuario** desde un worktree fijado al último commit. Puntos clave que solo se pueden comprobar con cuentas reales:
    - Claude: que `claude --resume <id> "<msg>"` continúe solo; que la memoria compartida funcione por symlink (`/memory`, `/skills`, auto-memory en `~/.relay/shared`); que el login guiado y el campo del código funcionen; que las barras de consumo aparezcan.
    - Codex: login interactivo, `codex login status` con sesión iniciada, texto real del 429 y del reinicio, `token_count.rate_limits` real.
    - Tema oscuro, y avisos por encima de los diálogos.
-3. Merge de `feat/mvp` → `dev` → `main`, mediante PR.
-4. Publicar el repo público `CarlosDevSanchez/relay` y proteger `main` (PR más aprobación del dueño; admin puede saltarla, `enforce_admins` desactivado).
-5. Reproducir la CI en local si se añade (por ahora el repo no tiene workflows).
+4. Reproducir la CI en local si se añade (por ahora el repo no tiene workflows).
 
 ## 7. Después del MVP
 - **F6 · Vista enriquecida** (lectura del transcript, chat dinámico, dock de terminal siempre visible): [plan](design/F6-vista-enriquecida.md), etapas F6.0–F6.6.
@@ -86,4 +88,4 @@ Estado al cierre de F5: 100 tests y e2e con 5 escenarios en verde; auditoría PA
 - `bun install` · `bun run dev` · `bun run typecheck` · `bun run test` · `bun run coverage` · `bun run build` · `bun run e2e` (stubs de `claude` y `codex`, HOME temporal; nunca toca datos reales).
 - Iconos: `node_modules/.bin/electron scripts/build-icons.mjs`.
 - Datos de la app: `~/.relay/` (`accounts.json`, `projects.json`, `prefs.json`, `copies.json`, `sessions.json`, `shared/`, `backups/`, `accounts/<id>/`, `status/`, `bin/`). Se puede cambiar con `RELAY_HOME`.
-- Worktree de prueba manual: `../relay-manual-test` (fijado a `ab08f7a`). Se elimina al terminar las pruebas, siguiendo la regla de limpieza de worktrees.
+- Worktree de prueba manual: `../relay-manual-test` (fijado a `ef7cb95`, que **precede a la reescritura del historial**; el usuario lo eliminará, pendiente). Debe retirarse siguiendo la regla de limpieza de worktrees.

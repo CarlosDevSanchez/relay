@@ -87,3 +87,23 @@ export function checkSessionRef(cwd: unknown, sessionId: unknown, projects: stri
   if (!isSessionId(sessionId)) throw new Error('Invalid session id')
   return { cwd, sessionId }
 }
+
+/** Transcript view requests: the renderer sends only ids; the file is resolved in main from the account and the session. Claude only (Codex: F6.6). */
+export function checkTranscriptRef(ref: unknown, accounts: Account[], projects: string[]): { account: Account; cwd: string; sessionId: string } {
+  const r = (ref ?? {}) as Record<string, unknown>
+  const account = checkAccountId(r.accountId, accounts)
+  if (account.provider !== 'claude') throw new Error('La vista enriquecida solo admite Claude')
+  const { cwd, sessionId } = checkSessionRef(r.cwd, r.sessionId, projects)
+  return { account, cwd, sessionId }
+}
+
+export function checkAgentId(v: unknown): string {
+  if (typeof v !== 'string' || !/^[0-9a-f]{8,64}$/i.test(v)) throw new Error('Invalid agent id')
+  return v
+}
+
+/** Byte offset returned by a previous page. */
+export function checkOffset(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) throw new Error('Invalid offset')
+  return v
+}

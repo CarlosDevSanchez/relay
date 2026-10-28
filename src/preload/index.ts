@@ -40,6 +40,13 @@ const api: RelayApi = {
   cli: { detect: () => ipcRenderer.invoke('cli:detect'), install: (p) => ipcRenderer.invoke('cli:install', p) },
   catalog: { list: () => ipcRenderer.invoke('catalog:list'), open: (id) => ipcRenderer.invoke('catalog:open', id) },
   mcp: { list: () => ipcRenderer.invoke('mcp:list') },
+  transcript: {
+    subscribe: (ref) => ipcRenderer.invoke('session:subscribe', ref),
+    unsubscribe: (ref) => ipcRenderer.invoke('session:unsubscribe', ref),
+    older: (ref, before) => ipcRenderer.invoke('session:older', ref, before),
+    subagent: (ref, agentId, before) => ipcRenderer.invoke('session:subagent', ref, agentId, before),
+    onEvents: (cb) => sub('session:events', cb)
+  },
   notifyTest: () => ipcRenderer.invoke('notify:test'),
   remindReset: (accountId, resetAt) => ipcRenderer.invoke('limit:remind', accountId, resetAt),
   onLimit: (cb) => sub('limit:hit', cb),

@@ -85,9 +85,9 @@ export function parseLimitLine(line: string): (LimitInfo & { ts: number }) | nul
 
 /**
  * Reads only bytes appended after creation (complete lines; a partial tail waits for its newline).
- * Handles a file that does not exist yet and truncation. fs.watch triggers `check`; a 1s interval is the fallback.
+ * `from` starts at a known offset instead of the current end; `onReset` is called when the file shrank (it is then read from 0). Handles a file that does not exist yet and truncation. fs.watch triggers `check`; a 1s interval is the fallback.
  */
-export function tailFile(file: string, onLines: (lines: string[]) => void): { check(): void; stop(): void } {
+export function tailFile(file: string, onLines: (lines: string[]) => void, from?: number, onReset?: () => void): { check(): void; stop(): void } {
   const size = (): number => {
     try {
       return statSync(file).size
@@ -95,7 +95,7 @@ export function tailFile(file: string, onLines: (lines: string[]) => void): { ch
       return -1
     }
   }
-  let off = Math.max(size(), 0)
+  let off = from ?? Math.max(size(), 0)
   let pending = Buffer.alloc(0)
   let watcher: FSWatcher | undefined
   const check = (): void => {
@@ -110,6 +110,7 @@ export function tailFile(file: string, onLines: (lines: string[]) => void): { ch
       }
     }
     if (n < off) {
+      onReset?.()
       off = 0
       pending = Buffer.alloc(0)
     }

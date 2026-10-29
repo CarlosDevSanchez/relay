@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Prefs } from '../shared/types'
+import { checkVersion } from './updates'
 
 export const DEFAULT_CONTINUE = 'Continúa exactamente donde lo dejaste.'
 
@@ -17,6 +18,9 @@ export const checkWarnAt = (v: unknown): number => {
   if (typeof v !== 'number' || !Number.isInteger(v) || v < 50 || v > 100) throw new Error('Umbral inválido: un número entero entre 50 y 100')
   return v
 }
+
+/** Version the user skips: '' (none) or x.y.z. */
+export const checkSkipped = (v: unknown): string => (v === '' ? '' : checkVersion(v))
 
 export function loadPrefs(home: string): Prefs {
   let d: any
@@ -40,10 +44,17 @@ export function loadPrefs(home: string): Prefs {
   } catch {
     /* default */
   }
+  let skipped = ''
+  try {
+    skipped = checkSkipped(d?.updates?.skipped)
+  } catch {
+    /* default */
+  }
   return {
     notifications: { system: typeof n?.system === 'boolean' ? n.system : true, sound: typeof n?.sound === 'boolean' ? n.sound : true },
     handoff: { autoContinue: typeof h?.autoContinue === 'boolean' ? h.autoContinue : true, message },
-    usage: { statusLine: typeof u?.statusLine === 'boolean' ? u.statusLine : true, warnAt }
+    usage: { statusLine: typeof u?.statusLine === 'boolean' ? u.statusLine : true, warnAt },
+    updates: { check: typeof d?.updates?.check === 'boolean' ? d.updates.check : true, skipped }
   }
 }
 
@@ -58,6 +69,9 @@ export function savePrefs(home: string, patch: unknown): Prefs {
   const u = (patch as any)?.usage
   if (typeof u?.statusLine === 'boolean') cur.usage.statusLine = u.statusLine
   if (typeof u === 'object' && u && 'warnAt' in u) cur.usage.warnAt = checkWarnAt(u.warnAt)
+  const up = (patch as any)?.updates
+  if (typeof up?.check === 'boolean') cur.updates.check = up.check
+  if (typeof up === 'object' && up && 'skipped' in up) cur.updates.skipped = checkSkipped(up.skipped)
   mkdirSync(home, { recursive: true })
   writeFileSync(join(home, 'prefs.json'), JSON.stringify(cur, null, 2))
   return cur

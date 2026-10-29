@@ -1,6 +1,7 @@
 // Smoke test of the built app with fake `claude` / `codex` binaries, a temp RELAY_HOME and a temp HOME: never touches ~/.relay or a real CLI.
 import assert from 'node:assert/strict'
 import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -607,6 +608,7 @@ if (!APP) {
     status(100, 31)
     await alfa.getByText(/Limitada hasta/).waitFor({ timeout: t })
     // a limited account stands out even when compact: error colour on the dot and the bar
+    assert.equal(await page.locator('dialog[open]').count(), 0, 'no dialog open before toggling the card')
     await alfa.getByTestId('card-toggle').click()
     assert.match(await alfa.getByTestId('mini-5h').locator('progress').getAttribute('class'), /progress-error/)
     assert.equal(await alfa.locator('.status-error').count(), 1, 'the dot of a limited account is red')
@@ -1868,6 +1870,130 @@ if (!APP) {
     await page.keyboard.press('Escape')
   } finally {
     await app.close()
+  }
+}
+// ---- scenario 12: update notice (fake GitHub `latest` on localhost; the packaged app ignores the override). Modal on its own with the safe button focused, no overflow, Descargar opens the URL main built (openExternal stubbed, never real), Omitir persists and silences the automatic check but not the manual one ----
+if (!APP) {
+  const d = setup('twelve')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  const cfg = join(d.home, 'cfg-upd')
+  mkdirSync(cfg)
+  writeFileSync(join(cfg, '.claude.json'), '{}')
+  mkdirSync(d.relayHome, { recursive: true })
+  writeFileSync(join(d.relayHome, 'accounts.json'), JSON.stringify([{ id: 'ffffffff', label: 'Upd', provider: 'claude', configDir: cfg }]))
+  let hits = 0
+  const srv = createServer((_q, r) => {
+    hits++
+    r.setHeader('content-type', 'application/json')
+    r.end(JSON.stringify({ tag_name: 'v99.0.0', html_url: 'https://evil.example/pwn', name: 'Relay v99.0.0', body: '## Novedades\n- <img src=x onerror=alert(1)> algo nuevo\n' + 'línea larga '.repeat(300), published_at: '2026-01-01T00:00:00Z' }))
+  })
+  await new Promise((ok) => srv.listen(0, '127.0.0.1', ok))
+  const url = `http://127.0.0.1:${srv.address().port}/latest`
+  const prefsFile = join(d.relayHome, 'prefs.json')
+  const poll = async (fn, what, ms = 10_000) => {
+    for (let i = 0; i < ms / 200; i++) {
+      if (fn()) return
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    assert.fail(`timeout: ${what}`)
+  }
+  const skipped = () => (existsSync(prefsFile) ? (JSON.parse(readFileSync(prefsFile, 'utf8')).updates?.skipped ?? '') : '')
+  const stubOpen = (app) => app.evaluate(({ shell }) => { globalThis.__opened = []; shell.openExternal = async (u) => void globalThis.__opened.push(u) })
+  const opened = (app) => app.evaluate(() => globalThis.__opened)
+  const dlgFits = async (page) => {
+    const bad = await page.evaluate(() => {
+      const b = document.querySelector('dialog[open] .modal-box').getBoundingClientRect()
+      const out = []
+      if (b.left < 0 || b.right > innerWidth || b.top < 0 || b.bottom > innerHeight) out.push('box outside the window')
+      for (const el of document.querySelectorAll('dialog[open] .modal-box *')) {
+        const r = el.getBoundingClientRect()
+        if (r.width && (r.left < b.left - 0.5 || r.right > b.right + 0.5)) out.push(`${el.tagName} leaves the box`)
+      }
+      return out
+    })
+    assert.deepEqual(bad, [], 'update modal overflows')
+  }
+  try {
+    {
+      const app = await launch(d, { RELAY_E2E_UPDATES_URL: url })
+      try {
+        const page = await app.firstWindow()
+        page.on('pageerror', (e) => console.error('pageerror', e.message))
+        await stubOpen(app)
+        const dlg = page.getByRole('dialog', { name: 'Actualización disponible' })
+        await dlg.waitFor({ timeout: 30_000 })
+        await dlg.getByText(/Relay v99\.0\.0 disponible \(tienes v\d/).waitFor({ timeout: t })
+        assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Más tarde', 'focus on the safe button')
+        assert.equal(await dlg.locator('img').count(), 0, 'release notes are text, never HTML')
+        assert.ok((await dlg.textContent()).includes('<img src=x'), 'raw HTML shows as text')
+        await dlgFits(page)
+        for (const scheme of ['light', 'dark']) {
+          await page.emulateMedia({ colorScheme: scheme })
+          await page.waitForTimeout(300)
+          await page.screenshot({ path: join(shots, `update-${scheme}.png`) })
+        }
+        await page.emulateMedia({ colorScheme: null })
+        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(900, 600))
+        await page.waitForTimeout(400)
+        await dlgFits(page)
+        await dlg.getByRole('button', { name: 'Descargar' }).click()
+        assert.deepEqual(await opened(app), ['https://github.com/CarlosDevSanchez/relay/releases/tag/v99.0.0'], 'main opens the URL it built, not html_url')
+        await dlg.waitFor({ state: 'detached', timeout: t })
+        // manual check shows it again; "Más tarde" does not skip
+        await page.getByRole('button', { name: 'Configuración' }).click()
+        const settings = page.getByRole('dialog', { name: 'Configuración' })
+        await settings.getByRole('button', { name: 'Actualizaciones' }).click()
+        await settings.getByRole('button', { name: 'Buscar actualizaciones' }).click()
+        await dlg.waitFor({ timeout: t })
+        await dlg.getByRole('button', { name: 'Más tarde' }).click()
+        assert.equal(skipped(), '', 'later does not skip')
+        await settings.getByRole('button', { name: 'Buscar actualizaciones' }).click()
+        await dlg.waitFor({ timeout: t })
+        await dlg.getByRole('button', { name: 'Omitir esta versión' }).click()
+        await dlg.waitFor({ state: 'detached', timeout: t })
+        await poll(() => skipped() === '99.0.0', 'skipped version persisted')
+        await settings.getByRole('button', { name: 'Buscar actualizaciones' }).click()
+        await dlg.waitFor({ timeout: t }) // the manual check still offers a skipped version
+        await dlg.getByRole('button', { name: 'Más tarde' }).click()
+      } finally {
+        await app.close()
+      }
+    }
+    // relaunch: the automatic check runs (server is hit) but a skipped version stays silent
+    const before = hits
+    const app = await launch(d, { RELAY_E2E_UPDATES_URL: url })
+    try {
+      const page = await app.firstWindow()
+      await page.getByTestId('account-card').first().waitFor({ timeout: t })
+      await poll(() => hits > before, 'automatic check ran', 30_000)
+      await page.waitForTimeout(1500)
+      assert.equal(await page.getByRole('dialog', { name: 'Actualización disponible' }).count(), 0, 'skipped version is not announced')
+    } finally {
+      await app.close()
+    }
+    // check off: nothing is fetched, even well past the (shortened) startup delay
+    writeFileSync(prefsFile, JSON.stringify({ updates: { check: false, skipped: '' } }))
+    const off = hits
+    const app2 = await launch(d, { RELAY_E2E_UPDATES_URL: url })
+    try {
+      const page = await app2.firstWindow()
+      await page.getByTestId('account-card').first().waitFor({ timeout: t })
+      await page.waitForTimeout(3500)
+      assert.equal(hits, off, 'updates.check=false: no automatic request')
+      assert.equal(await page.getByRole('dialog', { name: 'Actualización disponible' }).count(), 0)
+      // toggling check in Settings keeps the skipped version
+      writeFileSync(prefsFile, JSON.stringify({ updates: { check: false, skipped: '99.0.0' } }))
+      await page.getByRole('button', { name: 'Configuración' }).click()
+      const st = page.getByRole('dialog', { name: 'Configuración' })
+      await st.getByRole('button', { name: 'Actualizaciones' }).click()
+      await st.getByRole('checkbox').click()
+      await poll(() => JSON.parse(readFileSync(prefsFile, 'utf8')).updates.check === true, 'check toggled on')
+      assert.equal(skipped(), '99.0.0', 'toggling check keeps the skipped version')
+    } finally {
+      await app2.close()
+    }
+  } finally {
+    srv.close()
   }
 }
 console.log('e2e OK; screenshots in', shots)

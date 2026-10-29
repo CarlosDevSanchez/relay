@@ -462,8 +462,9 @@ describe('prefs', () => {
     const h = tmp()
     const hd = { autoContinue: true, message: 'Continúa exactamente donde lo dejaste.' }
     const ud = { statusLine: true, warnAt: 90 }
-    expect(loadPrefs(h)).toEqual({ notifications: { system: true, sound: true }, handoff: hd, usage: ud })
-    expect(savePrefs(h, { notifications: { sound: false, evil: 1, system: 'x' } })).toEqual({ notifications: { system: true, sound: false }, handoff: hd, usage: ud })
+    const up = { check: true, skipped: '' }
+    expect(loadPrefs(h)).toEqual({ notifications: { system: true, sound: true }, handoff: hd, usage: ud, updates: up })
+    expect(savePrefs(h, { notifications: { sound: false, evil: 1, system: 'x' } })).toEqual({ notifications: { system: true, sound: false }, handoff: hd, usage: ud, updates: up })
     expect(loadPrefs(h).notifications.sound).toBe(false)
     expect(savePrefs(h, null).notifications.sound).toBe(false)
     writeFileSync(join(h, 'prefs.json'), 'nope')

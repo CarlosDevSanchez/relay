@@ -43,6 +43,7 @@ const api: RelayApi = {
   files: { list: (ptyId) => ipcRenderer.invoke('files:list', ptyId) },
   handoff: (req) => ipcRenderer.invoke('handoff', req),
   prefs: { get: () => ipcRenderer.invoke('prefs:get'), set: (p) => ipcRenderer.invoke('prefs:set', p) },
+  updates: { version: () => ipcRenderer.invoke('updates:version'), check: () => ipcRenderer.invoke('updates:check'), open: (v) => ipcRenderer.invoke('updates:open', v), skip: (v) => ipcRenderer.invoke('updates:skip', v), onAvailable: (cb) => sub('updates:available', cb) },
   cli: { detect: () => ipcRenderer.invoke('cli:detect'), install: (p) => ipcRenderer.invoke('cli:install', p) },
   catalog: { list: () => ipcRenderer.invoke('catalog:list'), open: (id) => ipcRenderer.invoke('catalog:open', id) },
   mcp: { list: () => ipcRenderer.invoke('mcp:list') },

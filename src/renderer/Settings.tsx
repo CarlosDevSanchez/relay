@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from 'react'
-import type { Account, AccountStatus, CatalogLocation, CliStatus, McpReport, McpServer, Prefs, ProviderId } from '../shared/types'
+import type { UpdateResult, Account, AccountStatus, CatalogLocation, CliStatus, McpReport, McpServer, Prefs, ProviderId } from '../shared/types'
 import { NAMES, missingMsg, statusLine } from './status'
 import { Dialog } from './ui'
 
@@ -15,9 +15,10 @@ export interface SettingsProps {
   remove(a: Account): void
   add(imp: boolean): void
   login(a: Account): void
+  showUpdate(r: Extract<UpdateResult, { status: 'available' }>): void
 }
 
-const SECTIONS = ['Cuentas', 'Cambio de cuenta', 'Notificaciones', 'Consumo', 'Skills, agents y commands', 'Conectores (MCP)', 'CLI'] as const
+const SECTIONS = ['Cuentas', 'Cambio de cuenta', 'Notificaciones', 'Consumo', 'Actualizaciones', 'Skills, agents y commands', 'Conectores (MCP)', 'CLI'] as const
 
 /** Large modal (native dialog) with a left menu; ESC / backdrop / ✕ close it. */
 export function Settings(p: SettingsProps) {
@@ -39,6 +40,7 @@ export function Settings(p: SettingsProps) {
         {sec === 'Cambio de cuenta' && <Handoff />}
         {sec === 'Notificaciones' && <Notifications />}
         {sec === 'Consumo' && <Consumo />}
+        {sec === 'Actualizaciones' && <Updates showUpdate={p.showUpdate} />}
         {sec === 'Skills, agents y commands' && <Catalog accounts={p.accounts} />}
         {sec === 'Conectores (MCP)' && <Mcp accounts={p.accounts} />}
         {sec === 'CLI' && <Cli {...p} />}
@@ -134,6 +136,39 @@ function Consumo() {
         </div>
         <p className="label">Entero entre 50 y 100. La barra se pone amarilla 20 puntos antes y roja desde el umbral.</p>
       </fieldset>
+      {msg && <div role="alert" className={`alert alert-soft ${msg.ok ? 'alert-success' : 'alert-error'} py-2`}>{msg.t}</div>}
+    </div>
+  )
+}
+
+function Updates({ showUpdate }: Pick<SettingsProps, 'showUpdate'>) {
+  const [prefs, setPrefs] = useState<Prefs | null>(null)
+  const [version, setVersion] = useState('')
+  const [msg, setMsg] = useState<{ ok: boolean; t: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => void window.relay.prefs.get().then(setPrefs), [])
+  useEffect(() => void window.relay.updates.version().then(setVersion), [])
+  if (!prefs) return <Loading />
+  const check = () => {
+    setBusy(true)
+    setMsg(null)
+    window.relay.updates
+      .check()
+      .then((r) => {
+        if (r.status === 'available') showUpdate(r)
+        else setMsg(r.status === 'current' ? { ok: true, t: 'Relay está al día.' } : { ok: false, t: 'No se pudo comprobar (¿sin conexión o límite de GitHub?). Inténtalo más tarde.' })
+      })
+      .catch((e) => setMsg({ ok: false, t: rpcError(e) }))
+      .finally(() => setBusy(false))
+  }
+  return (
+    <div className="space-y-4 text-sm">
+      <p>Versión instalada: <span className="font-mono">v{version}</span></p>
+      <p className="opacity-70">Relay consulta las versiones publicadas en GitHub (solo esa petición, sin enviar datos) y te avisa si hay una más nueva. No descarga ni instala nada: la descargas tú y sustituyes la app.</p>
+      <label className="flex cursor-pointer items-center gap-3">
+        <input type="checkbox" className="toggle toggle-primary" checked={prefs.updates.check} onChange={(e) => void window.relay.prefs.set({ updates: { check: e.target.checked } }).then(setPrefs)} /> Buscar actualizaciones automáticamente
+      </label>
+      <button className="btn btn-outline btn-sm" disabled={busy} onClick={check}>Buscar actualizaciones</button>
       {msg && <div role="alert" className={`alert alert-soft ${msg.ok ? 'alert-success' : 'alert-error'} py-2`}>{msg.t}</div>}
     </div>
   )

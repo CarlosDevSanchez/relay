@@ -82,6 +82,8 @@ Estado al cierre de F5: 100 tests y e2e con 5 escenarios en verde; auditoría PA
 4. Reproducir la CI en local si se añade (por ahora el repo no tiene workflows).
 
 ## 7. Después del MVP
+- **Chat oculto (`feat/terminal-first`)**: el modo chat de las pestañas Claude (F6.2-F6.5) se oculta hasta una fase de arreglo; la terminal es la vista principal y única. Un solo interruptor: `chatEnabled` (IPC `app:chat`), true solo con `RELAY_E2E_CHAT=1` y app sin empaquetar; el e2e corre con el chat apagado por defecto (escenario 13: sin toggle ni panel de chat) y lo activa solo en los escenarios 9-12.
+- **Detección de límite (terminal-first)**: `parseLimitLine` devuelve siempre un aviso cuando la línea cumple la puerta estructural (assistant + `isApiErrorMessage` + `rate_limit`); `quotaLimits` (resetsAt, rateLimitType) primero, el texto en inglés solo de reserva. El modal de límite ignora Escape/Enter durante 1 s tras abrirse. Los escenarios e2e de chat (9-12) usan `RELAY_E2E_CHAT=1` y se omiten con la app empaquetada; el resto corre en modo solo terminal. Sin ejecutar e2e en esta ronda.
 - **F6 · Vista enriquecida** (lectura del transcript, chat dinámico, terminal viva a un clic; el chat es la interfaz principal): [plan](design/F6-vista-enriquecida.md), etapas F6.0–F6.7.
 - Handoff Claude ↔ Codex mediante un brief (transcript más git diff).
 - Empaquetado: `.dmg`, firma y notarización (requiere Apple Developer).

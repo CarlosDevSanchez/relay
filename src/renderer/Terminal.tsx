@@ -55,7 +55,7 @@ export function termTheme(): ITheme {
 
 /**
  * Mount once per pty (parent keys it by ptyId); hidden, never unmounted, when its tab is inactive.
- * `keep`: hidden with `visibility` instead of `display:none`, so it keeps its size (fit, pty size) and its buffer while the chat covers it.
+ * `keep`: hidden with `visibility` instead of `display:none`, so it keeps its size (fit, pty size) and its buffer while the chat (only when enabled) covers it.
  */
 export function TerminalPane({ ptyId, visible, keep }: { ptyId: number; visible: boolean; keep?: boolean }) {
   const el = useRef<HTMLDivElement>(null)

@@ -2,7 +2,7 @@ import { closeSync, openSync, readSync, readdirSync, statSync, watch, type FSWat
 import { join } from 'node:path'
 import { isSessionId } from './validate'
 
-const LIMIT_RE = /hit your (\w+) limit · resets (.+)/
+const LIMIT_RE = /hit your (?:(\w+) )?limit · resets (.+)/
 const RESET_RE = /^(?:([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)\s*$/i
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 
@@ -65,10 +65,13 @@ export function parseLimitText(text: string, ts: number): LimitInfo | null {
   const m = LIMIT_RE.exec(text)
   if (!m) return null
   const resetText = m[2]!.trim()
-  return { kind: m[1]!, resetText, resetAt: parseResetAt(resetText, ts) }
+  return { kind: m[1] ?? '', resetText, resetAt: parseResetAt(resetText, ts) }
 }
 
-/** One transcript line -> rate_limit info (with the line's timestamp), or null. */
+/**
+ * One transcript line -> rate_limit info (with the line's timestamp), or null. The structural gate (assistant + isApiErrorMessage +
+ * error "rate_limit") plus EITHER `quotaLimits` rejected (exact resetsAt in seconds, rateLimitType; first) OR the English text (fallback) decides, so a CLI wording change or another language still produces a hit while a transient 429 does not. File content is untrusted: types are checked.
+ */
 export function parseLimitLine(line: string): (LimitInfo & { ts: number }) | null {
   if (!line.includes('rate_limit')) return null
   let d: any
@@ -77,10 +80,19 @@ export function parseLimitLine(line: string): (LimitInfo & { ts: number }) | nul
   } catch {
     return null
   }
-  const ts = Date.parse(d?.timestamp)
-  if (d?.type !== 'assistant' || !d.isApiErrorMessage || d.error !== 'rate_limit' || Number.isNaN(ts)) return null
-  const info = parseLimitText(String(d.message?.content?.[0]?.text ?? ''), ts)
-  return info && { ...info, ts }
+  if (d?.type !== 'assistant' || d.isApiErrorMessage !== true || d.error !== 'rate_limit') return null
+  const parsed = Date.parse(d.timestamp)
+  const ts = Number.isNaN(parsed) ? Date.now() : parsed
+  const raw = d.message?.content?.[0]?.text
+  const text = typeof raw === 'string' ? raw : ''
+  const info = parseLimitText(text, ts)
+  const q = d.quotaLimits && typeof d.quotaLimits === 'object' ? d.quotaLimits : {}
+  const at = q.status === 'rejected' && typeof q.resetsAt === 'number' && Number.isFinite(q.resetsAt) && q.resetsAt > 0 ? q.resetsAt * 1000 : null
+  const type = typeof q.rateLimitType === 'string' ? q.rateLimitType.slice(0, 30) : ''
+  if (!info && !at) return null // a transient 429 tagged rate_limit (neither the quota text nor a rejected quota) is not an account limit
+  // never echo the raw message: without the regex the text is built from the exact reset, or neutral
+  const when = at ? new Date(at).toLocaleString('es', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : 'más tarde'
+  return { kind: info?.kind || type, resetText: info?.resetText ?? when, resetAt: at ?? info?.resetAt ?? null, ts }
 }
 
 /**

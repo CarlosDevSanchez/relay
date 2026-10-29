@@ -353,6 +353,7 @@ function handle(): void {
   ipcMain.handle('pty:start', (_e, req: StartRequest) => start(req))
   ipcMain.handle('prefs:get', () => loadPrefs(HOME))
   ipcMain.handle('prefs:set', (_e, patch) => savePrefs(HOME, patch))
+  ipcMain.handle('app:chat', () => !app.isPackaged && process.env.RELAY_E2E_CHAT === '1') // chat mode is hidden (terminal-first) except for e2e/dev with this var; the future fix phase flips the default
   ipcMain.handle('updates:version', () => app.getVersion())
   ipcMain.handle('updates:check', updateCheck)
   ipcMain.handle('updates:open', (_e, v: unknown) => shell.openExternal(releaseUrl(checkVersion(v)))) // built from the validated version, never from GitHub's html_url

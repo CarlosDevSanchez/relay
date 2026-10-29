@@ -277,6 +277,8 @@ export interface RelayApi {
   files: { list(ptyId: number): Promise<string[]> }
   handoff(req: HandoffRequest): Promise<StartResult>
   prefs: { get(): Promise<Prefs>; set(patch: { [K in keyof Prefs]?: Partial<Prefs[K]> }): Promise<Prefs> }
+  /** chat mode (F6.2-F6.5) is hidden; true only in dev/e2e with RELAY_E2E_CHAT=1 (never packaged) */
+  chatEnabled(): Promise<boolean>
   updates: {
     version(): Promise<string>
     check(): Promise<UpdateResult>

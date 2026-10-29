@@ -12,6 +12,8 @@ export interface ScreenInput {
   /** 0-based viewport row of the cursor */
   cursorY: number
   exited?: boolean
+  /** same rows with every dim/faint cell replaced by a space (the CLI's ghost suggestion in an empty box is dim, not typed). Only the input-box content check reads it; absent = lines */
+  dim?: string[]
 }
 /** `more` = the indented lines under the option (a wrapped path, an AskUserQuestion description) */
 export interface DialogOption { n: number; text: string; selected: boolean; more?: string }
@@ -52,7 +54,7 @@ const QUESTION = /(Do you want to|Would you like to|Ready to submit your answers
 
 const blank = (l: string) => !l.trim()
 
-export function classifyScreen({ lines, cursorY, exited }: ScreenInput): Screen {
+export function classifyScreen({ lines, cursorY, exited, dim }: ScreenInput): Screen {
   if (exited) return { state: 'exited' }
   let last = lines.length - 1
   while (last >= 0 && blank(lines[last]!)) last--
@@ -78,7 +80,7 @@ export function classifyScreen({ lines, cursorY, exited }: ScreenInput): Screen 
   if (!hasBox) return { state: 'unknown' }
   const busy = below.some((l) => /esc to interrupt/.test(l)) || w.slice(Math.max(0, top - 4), top).some((l) => SPINNER.test(l) && !/ for \d+s/.test(l))
   if (w.slice(Math.max(0, top - 6), top).some((l) => /^\s+(❯ )?\/\w[\w-]*\s{2,}\S/.test(l) || /^\s+[+◇] \S/.test(l))) return { state: 'overlay', busy }
-  const inner = w.slice(top + 1, bot).map((l, i) => (i ? l : l.replace(/^\s*❯\s?/, '')).trim()).join('\n').trim()
+  const inner = (dim ? dim.slice(start, end + 1) : w).slice(top + 1, bot).map((l, i) => (i ? l : l.replace(/^\s*❯\s?/, '')).trim()).join('\n').trim()
   if (inner && !/^Try "/.test(inner)) return { state: 'input-pending', busy }
   return { state: busy ? 'working' : 'idle', busy }
 }
@@ -120,4 +122,17 @@ function dialogInfo(kind: DialogKind, all: string[], options: DialogOption[], fi
     fingerprint: [kind, ...lines, ...options.map((o) => `${o.n}. ${o.text}${o.more ? ` ${o.more}` : ''}`)].join('\n'),
     ...(from < 0 && kind !== 'trust' ? { truncated: true } : {})
   }
+}
+
+export interface Cell { ch: string; dim: boolean; inverse: boolean }
+/**
+ * One row's dim mask, placeholder shape only: the row's content (after the `❯` prompt) is blanked when all its non-space cells are dim, or it is one inverse cell
+ * (the cursor over the suggestion's first char) followed only by dim cells. Anything else (typed text with a dim tail, e.g. voice-dictation interim text) is returned as is.
+ */
+export const maskDim = (cells: Cell[]): string => {
+  const at = cells.flatMap((c, i) => (c.ch.trim() ? [i] : []))
+  const p = cells[at[0] ?? 0]?.ch === '❯' ? at.shift() : -1
+  const body = at.map((i) => cells[i]!)
+  const ghost = body.every((c) => c.dim) || (body[0]!.inverse && body.length > 1 && body.slice(1).every((c) => c.dim))
+  return cells.map((c, i) => (ghost && i !== p ? ' ' : c.ch || ' ')).join('').trimEnd()
 }

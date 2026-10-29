@@ -79,8 +79,15 @@ bun run test       # vitest (fixtures in temp dirs)
 bun run coverage   # v8 coverage of the pure src/main modules
 bun run build
 bun run e2e        # Playwright-Electron smoke against a stub `claude` in a temp HOME
+bun run dist:mac   # ad-hoc signed macOS app + dmg/zip in dist/ (see below)
 ```
 Bun is used: `trustedDependencies` + a `postinstall` (`node node_modules/electron/install.js && electron-rebuild -f -w node-pty`) were needed because Bun did not run Electron's own download script.
+
+### Build for macOS
+```
+bun run dist:mac   # electron-vite build + electron-builder (arm64)
+```
+Output: `dist/mac-arm64/Relay.app` (plus `dist/Relay-<version>-arm64.dmg` and `.zip`). The app is only **ad-hoc signed** (each rebuild gets a new ad-hoc identity, so after reinstalling macOS may ask again for permissions such as folder access) (`mac.identity: "-"`, no hardened runtime, no notarization): there is no Apple Developer ID. A local build is not quarantined and opens normally; a copy downloaded from elsewhere needs right-click > Open on first launch, or `xattr -dr com.apple.quarantine Relay.app`. To test the packaged app: `RELAY_E2E_APP=$PWD/dist/mac-arm64/Relay.app/Contents/MacOS/Relay node e2e/smoke.mjs` (runs in the background: the smoke sets `RELAY_E2E_BACKGROUND=1`, which only keeps the window invisible and unfocused; skips the installer scenario, which ignores the test script when packaged). A Finder-launched app gets a minimal PATH: the packaged app reads PATH (only PATH) once at startup from your login shell (`$SHELL -ilc`, 3 s timeout) and puts it first, then appends `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, so `claude`/`codex`, `npx`/`bunx` MCP servers and node/bun/nvm tools are found. A slow shell rc file can delay startup by up to those 3 s. The probe is skipped only when `RELAY_E2E_BACKGROUND` is set (e2e).
 
 ### Architecture
 ```

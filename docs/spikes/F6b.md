@@ -184,3 +184,11 @@ Dónde es frágil:
 | 8 `/model`, `/compact`, `/clear` | verificado (`s` en el selector: no probado) |
 | 9 `/`, `@`, `?` | verificado |
 | 10 `/exit`, Ctrl+C, confianza | verificado; límite de cuota/errores: no verificado |
+
+## 11b. Texto fantasma (sugerencia dim) en la caja (sin verificar con el CLI real)
+
+Tras un turno el CLI oficial puede mostrar en la caja vacía una sugerencia gris (SGR dim/faint) que no es texto escrito. `classifyScreen` acepta `dim` (las mismas filas con las celdas dim sustituidas por espacios, `Terminal.tsx` vía `cell.isDim()`) y lo usa SOLO para decidir si la caja tiene contenido; sin `dim` (fixtures .txt) se comporta como antes, y la regla `Try "` queda como respaldo. Test sintético en `tests/screen.test.ts`. Sin verificar: que la sugerencia real use SGR dim (y no solo color gris) y que un paste con ella visible la sustituya (el paste vuelve la caja no vacía, la sugerencia desaparece. El Enter va en la misma escritura que el paste: el envío usa el valor escrito, y una sugerencia solo cuenta tras aceptarla explícitamente (estado `accepted`, strings del bundle); sin verificar en vivo).
+
+Evidencia (strings del bundle del CLI 2.1.312, nunca ejecutado; sin verificar en pantalla): la sugerencia se pinta `he.dim(t)` (SGR dim), pero con el cursor visible el PRIMER carácter va con el estilo del cursor (probablemente inverso) y NO dim. `maskDim` (`src/shared/screen.ts`) también blanquea una celda inversa seguida de una dim; un carácter inverso solo, o seguido de uno normal (texto escrito bajo el cursor), se conserva (dirección segura).
+
+La máscara solo cubre la forma del placeholder: el contenido de la fila (tras `❯`) se blanquea si todas sus celdas no vacías son dim, o es una celda inversa seguida solo de dim (saltando celdas de continuación de ancho 0). Texto escrito con cola dim (p. ej. texto interino del dictado por voz, `interimRange` → dim) NO se enmascara y sigue siendo `input-pending`.

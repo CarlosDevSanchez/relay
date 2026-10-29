@@ -11,6 +11,23 @@ const num = (v: unknown): number | undefined => (typeof v === 'number' && Number
 const RESULT_MAX = 8000
 const cut = (s: string, n: number): string => (s.length > n ? s.slice(0, n) + '…' : s)
 
+const TAG = /<(command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat|bash-input|bash-stdout|bash-stderr)>([\s\S]*?)<\/\1>/g
+// eslint-disable-next-line no-control-regex
+const NOISE = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]|[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
+
+/** CLI pseudo-XML user lines (slash commands, their output, `!` commands): plain text or an info notice. Only when the WHOLE string is made of these tags. */
+function pseudo(raw: string): { user: string } | { info: string } | null | undefined {
+  const t: Record<string, string> = {}
+  let n = 0
+  if (raw.replace(TAG, (_, k: string, v: string) => ((t[k] = t[k] === undefined ? v : t[k] + '\n' + v), n++, '')).trim() !== '' || !n) return undefined
+  const clean = (s: string) => s.replace(NOISE, '').trim()
+  const name = clean(t['command-name'] ?? '') || (t['command-message'] ? '/' + clean(t['command-message']) : '')
+  if (name) return { user: `${name} ${clean(t['command-args'] ?? '')}`.trim() }
+  if (t['bash-input']) return { user: '! ' + clean(t['bash-input']) }
+  const out = clean([t['local-command-stdout'], t['local-command-stderr'], t['bash-stdout'], t['bash-stderr']].filter(Boolean).join('\n'))
+  return out ? { info: cut(out, 500) } : null
+}
+
 /** Bulky input fields already shown as a diff. */
 const DROP: Record<string, string[]> = { Write: ['content'], Edit: ['old_string', 'new_string'], MultiEdit: ['edits'] }
 
@@ -134,11 +151,17 @@ export function createParser(orphans: Map<string, Done> = new Map(), tools: Map<
     if (t === 'user') {
       if (d.isMeta === true || d.isCompactSummary === true) return
       const c = msg.content
-      if (typeof c === 'string') return set({ id: `${uuid}:0`, at: at * 1000, kind: 'message', role: 'user', text: c })
+      const user = (id: string, pos: number, text: string): void => {
+        const p = pseudo(text)
+        if (p === null) return
+        if (p && 'info' in p) return set({ id, at: pos, kind: 'notice', notice: 'info', text: p.info })
+        set({ id, at: pos, kind: 'message', role: 'user', text: p ? p.user : text })
+      }
+      if (typeof c === 'string') return user(`${uuid}:0`, at * 1000, c)
       if (!Array.isArray(c)) return
       c.forEach((b, i) => {
         if (!isObj(b)) return
-        if (b.type === 'text' && typeof b.text === 'string') set({ id: `${uuid}:${i}`, at: at * 1000 + i, kind: 'message', role: 'user', text: b.text })
+        if (b.type === 'text' && typeof b.text === 'string') user(`${uuid}:${i}`, at * 1000 + i, b.text)
         else if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
           settle(b.tool_use_id, done(b, d.toolUseResult, ts))
         }

@@ -121,6 +121,7 @@ export function ChatPane({ ptyId, r, account, shared, exited, active, showing, m
         r = await onFrame(async (g) => (plan(g) === 'send' ? window.relay.pty.send(ptyId, text, g.seq) : 'blocked'))
       }
       if (r === 'gone') return fail('La sesión ya no está activa.')
+      if (r === 'blocked' && plan(readScreen(ptyId, exited)) === 'confirm') return fail('La entrada del CLI sigue con texto tras vaciarla (Ctrl+U): no se envió nada. Revísala con «Abrir terminal».')
       if (r !== 'ok') return fail('El CLI no ha mostrado su pantalla todavía o cambió mientras enviabas: no se envió nada. Inténtalo de nuevo o usa «Abrir terminal».')
       setSent((n) => n + 1)
       return true

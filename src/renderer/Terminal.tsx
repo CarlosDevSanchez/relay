@@ -2,6 +2,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal, type ITheme } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
 import { registerScreen } from './screens'
+import { maskDim } from '../shared/screen'
 
 const FONT = 'ui-monospace, "SF Mono", Menlo, monospace'
 
@@ -79,7 +80,10 @@ export function TerminalPane({ ptyId, visible, keep }: { ptyId: number; visible:
     const unreg = registerScreen(ptyId, {
       read: () => {
         const b = term.buffer.active
-        return { lines: Array.from({ length: term.rows }, (_, i) => b.getLine(b.baseY + i)?.translateToString(true) ?? ''), cursorY: b.cursorY, seq: parsed, bracketed: term.modes.bracketedPasteMode }
+        const rows = Array.from({ length: term.rows }, (_, i) => b.getLine(b.baseY + i))
+        // dim/faint cells (the CLI's ghost suggestion) blanked, so they do not read as typed input
+        const dim = rows.map((l) => maskDim(l ? Array.from({ length: l.length }, (_, x) => l.getCell(x)!).map((c) => ({ ch: c.getChars(), dim: !!c.isDim(), inverse: !!c.isInverse() })) : []))
+        return { lines: rows.map((l) => l?.translateToString(true) ?? ''), dim, cursorY: b.cursorY, seq: parsed, bracketed: term.modes.bracketedPasteMode }
       },
       flush: () => new Promise<void>((r) => term.write('', r))
     })

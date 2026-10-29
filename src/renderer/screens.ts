@@ -1,7 +1,7 @@
 import { type Mode, modeFromFooter } from '../shared/controls'
 import { type Screen, classifyScreen } from '../shared/screen'
 
-interface Frame { lines: string[]; cursorY: number; /** last output chunk (pty:data seq) xterm has parsed */ seq: number; bracketed: boolean }
+interface Frame { lines: string[]; dim?: string[]; cursorY: number; /** last output chunk (pty:data seq) xterm has parsed */ seq: number; bracketed: boolean }
 interface Source { read(): Frame; /** resolves once xterm has parsed everything already written to it */ flush(): Promise<void> }
 
 /** Each TerminalPane registers a reader of its xterm viewport; the chat classifies it (the terminal may be hidden, its buffer is not). */

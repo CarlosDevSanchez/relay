@@ -2,7 +2,7 @@ import { realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { type Account, CROSS_PROVIDER, type HandoffRequest, type StartRequest } from '../shared/types'
 import type { AnswerAction } from '../shared/prompt'
-import { MAX_ANSWER, MAX_SEND } from './bridge'
+import { KEYS, type KeyName, MAX_ANSWER, MAX_SEND } from './bridge'
 import { type InstallCommand, installCommand, providers } from './providers'
 
 export const isSessionId = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
@@ -126,6 +126,12 @@ export function checkClear(v: unknown): boolean {
   const o = (v ?? {}) as Record<string, unknown>
   if (typeof o.overlay !== 'boolean') throw new Error('Invalid clear options')
   return o.overlay
+}
+
+/** `pty:key` name: only the closed allowlist of bridge.ts (own properties, so `toString` and friends fail). */
+export function checkKey(v: unknown): KeyName {
+  if (typeof v !== 'string' || !Object.hasOwn(KEYS, v)) throw new Error('Invalid key')
+  return v as KeyName
 }
 
 /** Output sequence the renderer last parsed (see pty.ts). */

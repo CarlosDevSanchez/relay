@@ -12,7 +12,8 @@ import { buildCatalog } from './catalog'
 import { detectCli } from './cli'
 import { mcpReport } from './mcp'
 import { copySessionForHandoff, runHandoff, sourceExists } from './handoff'
-import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty, sendPty, stopPty, clearPty, answerPty } from './pty'
+import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty, sendPty, stopPty, clearPty, answerPty, keyPty, ptyCwd } from './pty'
+import { listFiles } from './files'
 import { providers } from './providers'
 import { type LimitInfo, scheduleAt, pickRebind, watchLimits, watchNewSession } from './limit'
 import { candidateDirs, canProbe, claudeProjectDir, dirProvider, isDefaultInstall } from './paths'
@@ -23,7 +24,7 @@ import { drifted, linkAccount, nextFlag, sharedDir, unlinkAccount } from './shar
 import { listSessions } from './sessions'
 import { accountStatus } from './usage'
 import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount, setSharedMemory } from './store'
-import { checkAccountId, checkAnswer, checkClaudePty, checkClear, checkPtyId, checkSendText, checkSeq, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart, checkAgentId, checkOffset, checkTranscriptRef } from './validate'
+import { checkAccountId, checkAnswer, checkClaudePty, checkClear, checkKey, checkPtyId, checkSendText, checkSeq, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart, checkAgentId, checkOffset, checkTranscriptRef } from './validate'
 
 const HOME = process.env.RELAY_HOME || join(homedir(), '.relay')
 let win: BrowserWindow
@@ -72,6 +73,7 @@ const record = (fn: Parameters<typeof updateRegistry>[1]): void => {
   }
 }
 const touched = new Map<number, number>()
+const fileCache = new Map<number, { at: number; files: string[] }>()
 const ptyData = (id: number, d: string, seq: number): void => {
   send('pty:data', id, d, seq)
   const sid = ptyInfo(id)?.sessionId
@@ -84,6 +86,7 @@ const ptyExit = (id: number, code: number): void => {
   touched.delete(id)
   watchers.get(id)?.stop()
   watchers.delete(id)
+  fileCache.delete(id)
   send('pty:exit', id, code)
 }
 
@@ -349,6 +352,16 @@ function handle(): void {
     return n
   }
   ipcMain.handle('pty:send', (_e, id: unknown, text: unknown, seq: unknown) => sendPty(claudePty(id), checkSendText(text), checkSeq(seq)))
+  ipcMain.handle('pty:key', (_e, id: unknown, seq: unknown, key: unknown) => keyPty(claudePty(id), checkKey(key), checkSeq(seq)))
+  // `@` autocomplete (F6.5): file names of the tab's own project only, never contents
+  ipcMain.handle('files:list', (_e, id: unknown) => {
+    const n = claudePty(id)
+    const hit = fileCache.get(n)
+    if (hit && Date.now() - hit.at < 5000) return hit.files // asked on every `@` token: walk at most once per 5 s
+    const files = listFiles(ptyCwd(n)!)
+    fileCache.set(n, { at: Date.now(), files })
+    return files
+  })
   ipcMain.handle('pty:stop', (_e, id: unknown) => stopPty(claudePty(id)))
   ipcMain.handle('pty:clear', (_e, id: unknown, opts: unknown, seq: unknown) => clearPty(claudePty(id), checkClear(opts), checkSeq(seq)))
   // prompt cards (F6.4): a closed action set; the renderer compares the card's fingerprint with the live screen, main applies the seq guard

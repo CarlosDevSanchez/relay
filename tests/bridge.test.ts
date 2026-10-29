@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_ANSWER, MAX_SEND, STOP, answerSteps, clearSteps, pasteBytes } from '../src/main/bridge'
-import { checkAnswer, checkClaudePty, checkClear, checkPtyId, checkSendText, checkSeq } from '../src/main/validate'
+import { KEYS, MAX_ANSWER, MAX_SEND, STOP, answerSteps, clearSteps, pasteBytes } from '../src/main/bridge'
+import { checkAnswer, checkClaudePty, checkClear, checkKey, checkPtyId, checkSendText, checkSeq } from '../src/main/validate'
 
 const PS = '\x1b[200~'
 const PE = '\x1b[201~'
@@ -8,6 +8,11 @@ const PE = '\x1b[201~'
 describe('composer bridge bytes (built in main)', () => {
   it('wraps the text in a bracketed paste followed by Enter, in one write', () => {
     expect(pasteBytes('hola')).toBe(`${PS}hola${PE}\r`)
+  })
+  it('drops trailing whitespace only (a palette entry leaves `/compact ` in the composer)', () => {
+    expect(pasteBytes('/compact ')).toBe(`${PS}/compact${PE}\r`)
+    expect(pasteBytes('a\nb \n\n')).toBe(`${PS}a\nb${PE}\r`)
+    expect(pasteBytes(' x')).toBe(`${PS} x${PE}\r`)
   })
   it('keeps multi-line text and tabs', () => {
     expect(pasteBytes('a\n\tb\nc')).toBe(`${PS}a\n\tb\nc${PE}\r`)
@@ -54,6 +59,16 @@ describe('card answer bytes (F6.4)', () => {
     expect(line).toBe('a[201~b cd')
     expect(line).not.toMatch(/[\x00-\x1f\x7f-\x9f]/)
     expect(() => answerSteps({ kind: 'line', text: '\x1b\r' })).toThrow()
+  })
+})
+
+describe('pty:key allowlist', () => {
+  it('has exactly one key: Shift+Tab (ESC [ Z)', () => {
+    expect(KEYS).toEqual({ 'shift-tab': '\x1b[Z' })
+  })
+  it('checkKey accepts only that name', () => {
+    expect(checkKey('shift-tab')).toBe('shift-tab')
+    for (const bad of ['tab', 'enter', '\x1b[Z', 'ctrl-c', '__proto__', 'toString', 'constructor', undefined, null, 1, {}]) expect(() => checkKey(bad), String(bad)).toThrow()
   })
 })
 

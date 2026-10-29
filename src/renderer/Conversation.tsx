@@ -264,7 +264,7 @@ export function ConversationView({ r: ref, onTool, onMeta, onAsk }: { r: Transcr
     if (prepended || (p && !st.events.some((e) => e.id === p.first))) prev.current = null // an unanswered request keeps waiting for its page
   }, [st])
   useEffect(() => {
-    const ro = new ResizeObserver(() => stick.current && (box.current!.scrollTop = box.current!.scrollHeight))
+    const ro = new ResizeObserver(() => stick.current && box.current && (box.current.scrollTop = box.current.scrollHeight))
     ro.observe(inner.current!)
     return () => ro.disconnect()
   }, [])

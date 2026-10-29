@@ -508,6 +508,7 @@ export function App() {
                       ptyId={t.ptyId}
                       r={{ accountId: t.accountId, cwd: t.cwd, sessionId: t.sessionId! }}
                       account={accLabel(t.accountId)}
+                      shared={!!accounts.find((a) => a.id === t.accountId)?.sharedMemory}
                       exited={!!t.exited}
                       active={t.ptyId === cur}
                       showing={chatOf(t)}

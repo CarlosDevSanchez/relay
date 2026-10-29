@@ -1,5 +1,5 @@
 // The composer bridge (F6.3): the renderer sends ids and text only; every byte that reaches the CLI's pty from these paths is built here.
-// Never ^C (\x03), ^D (\x04) or ^Z (\x1a): the allowlist is Enter (after a bracketed paste), ESC (Stop / close a list) and ^U (clear the box).
+// Never ^C (\x03), ^D (\x04) or ^Z (\x1a): the allowlist is Enter (after a bracketed paste), ESC (Stop / close a list), ^U (clear the box) and Shift+Tab (KEYS).
 
 import type { AnswerAction } from '../shared/prompt'
 
@@ -9,13 +9,16 @@ const PASTE_START = '\x1b[200~'
 const PASTE_END = '\x1b[201~'
 /** Stop: a single ESC interrupts the turn. */
 export const STOP = '\x1b'
+/** `pty:key` allowlist (F6.5): a name from the renderer, the bytes from here. Shift+Tab cycles the permission mode. */
+export const KEYS = { 'shift-tab': '\x1b[Z' } as const
+export type KeyName = keyof typeof KEYS
 
 /** CRLF and a lone CR become LF; then every C0 control but \n and \t, DEL and C1 go (ESC would let the text close the paste early). */
 const sanitize = (text: string): string => text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')
 
 /** The message as the CLI wants it: bracketed paste, then Enter, in ONE write. */
 export function pasteBytes(text: string): string {
-  const clean = sanitize(text)
+  const clean = sanitize(text).trimEnd() // the palette leaves `/name ` in the composer: the trailing space is not part of the command
   if (!clean.trim()) throw new Error('Mensaje vacío')
   return `${PASTE_START}${clean}${PASTE_END}\r`
 }

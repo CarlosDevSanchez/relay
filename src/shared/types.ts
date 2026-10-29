@@ -252,6 +252,8 @@ export interface RelayApi {
     resize(ptyId: number, cols: number, rows: number): void
     /** composer (F6.3): main wraps the sanitized text in a bracketed paste + Enter; `seq` = last output chunk parsed by the renderer, 'stale' = more output arrived since (nothing written) */
     send(ptyId: number, text: string, seq: number): Promise<'ok' | 'stale' | 'gone'>
+    /** Shift+Tab (F6.5, the only key): main maps the name to the bytes; same `seq` guard as send */
+    key(ptyId: number, seq: number, key: 'shift-tab'): Promise<'ok' | 'stale' | 'gone'>
     /** Stop: main writes exactly one ESC */
     stop(ptyId: number): Promise<boolean>
     /** empties the CLI's input box (fixed allowlist in main: `\x15`, preceded by ESC when a `/` or `@` list is open) */
@@ -262,6 +264,8 @@ export interface RelayApi {
     onData(cb: (ptyId: number, data: string, seq: number) => void): () => void
     onExit(cb: (ptyId: number, code: number) => void): () => void
   }
+  /** `@` autocomplete: relative file names of the tab's project (main lists them; contents are never read) */
+  files: { list(ptyId: number): Promise<string[]> }
   handoff(req: HandoffRequest): Promise<StartResult>
   prefs: { get(): Promise<Prefs>; set(patch: Partial<Prefs>): Promise<Prefs> }
   cli: {

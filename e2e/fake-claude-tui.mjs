@@ -4,6 +4,7 @@
 //   argv[2] session id | env STUB_KEYS (log file) STUB_CTL (control file: '', 'unknown' or a dialog name, see DIALOGS) STUB_ENC + CLAUDE_CONFIG_DIR (transcript) STUB_THINK (ms)
 // F6.4: the dialogs are drawn from the real fixtures (tests/fixtures/screens) and answer to the keys the spike documents (docs/spikes/F6b.md 4-7): a digit selects and
 // confirms (toggles in multi-select), Tab moves to the next tab, a text row takes the typed line and Enter, ESC cancels. Every answer is logged as `ANSWER:...`.
+import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,11 +26,17 @@ function fx(file, anchor, w, edit = (l) => l) {
   return out
 }
 
-const sid = process.argv[2] ?? '00000000-0000-4000-8000-000000000000'
+// F6.5: Shift+Tab (ESC [ Z) cycles the permission mode with the real footer texts (docs/spikes/F6b.md 8; ctl `dropkey` ignores it); a submitted `/compact`, `/clear`, `/model x`
+// is logged as `CMD:<text>` and reacted to (compact -> brief spinner + compact_boundary line, clear -> a NEW session file like the CLI, model -> later answers carry that model).
+let sid = process.argv[2] ?? '00000000-0000-4000-8000-000000000000'
 const { STUB_KEYS: keysLog, STUB_CTL: ctl, STUB_ENC: enc, CLAUDE_CONFIG_DIR: cfg } = process.env
 const think = Number(process.env.STUB_THINK ?? 1500)
 const NBSP = ' '
-const tr = enc && cfg ? join(cfg, 'projects', enc, `${sid}.jsonl`) : ''
+let tr = enc && cfg ? join(cfg, 'projects', enc, `${sid}.jsonl`) : ''
+let model = 'claude-fake-1'
+const MODES = ['⏸ manual mode on', '⏵⏵ accept edits on (shift+tab to cycle)', '⏸ plan mode on (shift+tab to cycle)', '⏵⏵ auto mode on (shift+tab to cycle)']
+let mode = 0
+let shifts = 0 // Shift+Tab presses since the control file last changed (`dropsecond` ignores only the 2nd)
 if (tr) mkdirSync(join(cfg, 'projects', enc), { recursive: true })
 const log = (l) => keysLog && appendFileSync(keysLog, l + '\n')
 
@@ -104,7 +111,7 @@ const queue = []
 let n = 0
 const stamp = () => new Date(Date.UTC(2026, 0, 1, 12, 0, n++)).toISOString()
 const line = (o) => tr && appendFileSync(tr, JSON.stringify({ parentUuid: null, isSidechain: false, userType: 'external', cwd: process.cwd(), sessionId: sid, version: '2.1.312', gitBranch: 'main', uuid: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, timestamp: stamp(), ...o }) + '\n')
-const asst = (mid, block, stop) => line({ type: 'assistant', requestId: `req_${mid}`, message: { id: `msg_${mid}`, type: 'message', role: 'assistant', model: 'claude-fake-1', content: [block], stop_reason: stop, usage: { input_tokens: 3, output_tokens: 5 } } })
+const asst = (mid, block, stop) => line({ type: 'assistant', requestId: `req_${mid}`, message: { id: `msg_${mid}`, type: 'message', role: 'assistant', model, content: [block], stop_reason: stop, usage: { input_tokens: 3, output_tokens: 5 } } })
 
 function draw() {
   const rows = process.stdout.rows || 30
@@ -122,7 +129,7 @@ function draw() {
     cursor = [body.length, 2 + rowsIn[0].length]
     body.push(`❯${NBSP}${rowsIn[0] || (thinking ? '' : 'Try "something"')}`, ...rowsIn.slice(1).map((l) => `  ${l}`))
     if (!input && !thinking) cursor[1] = 2
-    body.push(rule, thinking ? '  ⏸ manual mode on · esc to interrupt' : '  ⏸ manual mode on · ? for shortcuts')
+    body.push(rule, `  ${MODES[mode]}${thinking ? ' · esc to interrupt' : mode ? '' : ' · ? for shortcuts'}`)
   }
   const head = [' Claude Code (fake TUI)', ' fake model · test', ` ${process.cwd()}`]
   const pad = Math.max(0, rows - head.length - body.length)
@@ -144,11 +151,26 @@ function startTurn(text) {
     draw()
   }, think)
 }
+function command(text) {
+  log(`CMD:${text}`)
+  const [name, arg] = text.split(/\s+/)
+  if (name === '/clear') {
+    sid = randomUUID()
+    if (enc && cfg) tr = join(cfg, 'projects', enc, `${sid}.jsonl`)
+    line({ type: 'system', subtype: 'local_command', content: '<command-name>/clear</command-name>' })
+  } else if (name === '/compact') {
+    thinking = setTimeout(() => ((thinking = null), line({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata: { trigger: 'manual', preTokens: 1200 } }), draw()), 1200)
+  } else if (name === '/model' && arg) {
+    model = `claude-${arg}`
+    asst(`m${++n}`, { type: 'text', text: `Set model to ${arg}` }, 'end_turn')
+  }
+}
 function submit() {
   const text = input.trim()
   input = ''
   listClosed = false
   if (!text) return
+  if (text.startsWith('/')) return command(text)
   if (thinking) queue.push(text)
   else startTurn(text)
 }
@@ -182,7 +204,11 @@ process.stdin.on('data', (d) => {
     else if (c === '\x15') ((input = ''), (listClosed = false))
     else if (c === '\x7f') input = input.slice(0, -1)
     else if (c === '\x1b') {
-      if (d[i + 1] === '[') {
+      if (d[i + 1] === '[' && d[i + 2] === 'Z') {
+        i += 2
+        shifts++
+        if (forced !== 'dropkey' && !(forced === 'dropsecond' && shifts === 2)) mode = (mode + 1) % MODES.length
+      } else if (d[i + 1] === '[') {
         i += 2
         while (i < d.length && !/[@-~]/.test(d[i])) i++
       } else esc()
@@ -195,6 +221,7 @@ if (ctl) setInterval(() => {
   const v = existsSync(ctl) ? readFileSync(ctl, 'utf8').trim() : ''
   if (v === forced) return
   forced = v
+  shifts = 0
   dlg = DIALOGS[v] ? { kind: DIALOGS[v].v, other: !!DIALOGS[v].other, long: !!DIALOGS[v].long, confirmText: !!DIALOGS[v].confirmText, step: 'fruits', boxes: new Set(), text: null } : null
   if (v === 'plan') openTool('ExitPlanMode', { plan: '# Plan de prueba\n\n- paso uno\n- paso dos' })
   if (v === 'question') openTool('AskUserQuestion', { questions: [{ question: 'Which color do you prefer?', header: 'Color', multiSelect: false, options: [{ label: 'Red', description: 'Rojo desde el transcript' }, { label: 'Blue', description: 'Azul desde el transcript' }] }] })

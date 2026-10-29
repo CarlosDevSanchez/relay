@@ -14,7 +14,7 @@ vi.mock('node-pty', () => ({
   }
 }))
 
-const { answerPty, clearPty, sendPty, stopPty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, spawnPty, wasBound, writePty } = await import('../src/main/pty')
+const { answerPty, clearPty, keyPty, ptyCwd, sendPty, stopPty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, spawnPty, wasBound, writePty } = await import('../src/main/pty')
 const exits: number[] = []
 const mk = (acc: string, sid?: string) => spawnPty('x', [], '/', {}, acc, sid, () => undefined, (id) => void exits.push(id))
 
@@ -100,6 +100,17 @@ describe('composer bridge writes', () => {
     f.data('c') // output arrives after the renderer read its frame
     expect(sendPty(id, 'x', 2)).toBe('stale')
     expect(f.written).toEqual([])
+    await killPty(id)
+  })
+  it('key writes the allowlisted bytes (Shift+Tab) once, with the stale guard, and clears a pending text answer', async () => {
+    const { id, f } = live()
+    expect(keyPty(id, 'shift-tab', 1)).toBe('stale')
+    expect(f.written).toEqual([])
+    expect(keyPty(id, 'shift-tab', 2)).toBe('ok')
+    expect(f.written).toEqual(['\x1b[Z'])
+    expect(keyPty(9999, 'shift-tab', 0)).toBe('gone')
+    expect(ptyCwd(id)).toBe('/')
+    expect(ptyCwd(9999)).toBeUndefined()
     await killPty(id)
   })
   it('clear writes the allowlisted steps in order, ESC only for an open list', async () => {

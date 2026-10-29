@@ -1,6 +1,6 @@
 // Smoke test of the built app with fake `claude` / `codex` binaries, a temp RELAY_HOME and a temp HOME: never touches ~/.relay or a real CLI.
 import assert from 'node:assert/strict'
-import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1498,6 +1498,352 @@ const mainOverflow = (page, withTab) =>
     }
     writeFileSync(ctl, '')
     await state('idle')
+    assert.ok(!existsSync(join(d.home, '.claude')), 'nothing written outside the temp HOME')
+  } finally {
+    await app.close()
+  }
+}
+// ---- scenario 12: controls bar and palettes (F6.5): `/` palette, `@` autocomplete, "+" menu, mode cycle (Shift+Tab), model warning, context ring, compact / clear, nothing while busy, fits, shots ----
+{
+  const d = setup('twelve')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  const proj = join(d.home, 'controls-app')
+  mkdirSync(proj)
+  const cwd = realpathSync(proj)
+  const out = join(d.home, 'outside-project')
+  mkdirSync(out)
+  writeFileSync(join(out, 'secret.txt'), 'TOP SECRET')
+  for (const [f, c] of [['README.md', '# hi'], ['src/app.ts', 'export {}'], ['node_modules/pkg/index.js', 'x'], ['.env', 'K=V'], ['.git/config', 'x'], ['con espacio.txt', 'x']]) {
+    mkdirSync(join(proj, f, '..'), { recursive: true })
+    writeFileSync(join(proj, f), c)
+  }
+  symlinkSync(join(out, 'secret.txt'), join(proj, 'link-out.txt'))
+  symlinkSync(out, join(proj, 'dir-out'))
+  const cfg = join(d.home, 'cfg-controls')
+  mkdirSync(join(cfg, 'commands'), { recursive: true })
+  writeFileSync(join(cfg, '.claude.json'), '{}')
+  writeFileSync(join(cfg, 'commands/deploy.md'), '---\ndescription: Despliega el proyecto a producción\n---\nDeploy.\n')
+  mkdirSync(d.relayHome, { recursive: true })
+  writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([cwd]))
+  writeFileSync(join(d.relayHome, 'accounts.json'), JSON.stringify([{ id: 'eeeeeeee', label: 'Personal CarlosDev con una etiqueta de cuenta muy larga', provider: 'claude', configDir: cfg }]))
+  const klog = join(tmp, 'controls-keys.log')
+  const ctl = join(tmp, 'controls-ctl')
+  writeFileSync(ctl, '')
+  const enc = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  const app = await launch(d, { STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: enc, STUB_THINK: '2500' })
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.getByTestId('account-card').first().waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    const chat = page.getByTestId('chat-pane')
+    const term = page.getByTestId('terminal-pane')
+    const composer = page.getByTestId('composer')
+    const palette = page.getByTestId('palette')
+    const items = palette.getByTestId('palette-item')
+    const lines = () => (existsSync(klog) ? readFileSync(klog, 'utf8').split('\n') : [])
+    const bytes = () => lines().filter((l) => l.startsWith('BYTES:')).map((l) => JSON.parse(l.slice(6))).join('')
+    const cmds = () => lines().filter((l) => l.startsWith('CMD:'))
+    const poll = async (fn, what) => {
+      for (let i = 0; i < 75; i++) {
+        if (await fn()) return
+        await new Promise((r) => setTimeout(r, 200))
+      }
+      assert.fail(`timeout: ${what}`)
+    }
+    const state = (s) => page.waitForFunction((x) => document.querySelector('[data-testid=activity]')?.dataset.state === x, s, { timeout: t })
+    const label = (id) => page.getByTestId(id).innerText().then((x) => x.trim())
+    const PS = '\x1b[200~'
+    const PE = '\x1b[201~'
+    const pick = async (id, name) => {
+      await page.getByTestId(id).click()
+      await page.getByRole('menuitem', { name, exact: true }).click()
+    }
+    const backToChat = async () => {
+      await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+      await page.getByRole('button', { name: 'Chat', exact: true }).click()
+      await state('idle')
+    }
+
+    await composer.waitFor({ timeout: t })
+    await state('idle')
+    assert.equal(await label('info-mode'), 'Manual', 'the mode comes from the CLI footer')
+
+    // ---- `/` palette: opens on a leading `/`, lists built-ins + the account's custom commands, filters, keyboard navigation, Esc, fills the composer ----
+    await composer.pressSequentially('/')
+    await palette.waitFor({ timeout: t })
+    assert.equal(bytes(), '', 'typing `/` in the composer writes nothing to the pty')
+    const names = await items.allInnerTexts()
+    for (const n of ['compact', 'clear', 'model', 'permissions', 'cost', 'memory', 'agents', 'mcp', 'config', 'help', 'review', 'resume', 'init', 'deploy']) assert.ok(names.some((x) => x.startsWith(`/${n}`)), `palette lists /${n}`)
+    await composer.pressSequentially('c')
+    assert.equal(await composer.getAttribute('role'), 'combobox')
+    assert.equal(await composer.getAttribute('aria-expanded'), 'true')
+    assert.equal(await composer.getAttribute('aria-activedescendant'), 'palette-opt-0')
+    await composer.pressSequentially('zz')
+    await poll(async () => (await palette.count()) === 0, 'no match closes the palette')
+    await composer.press('Backspace')
+    await composer.press('Backspace')
+    await palette.waitFor({ timeout: t })
+    assert.ok((await items.count()) >= 3, 'filtering as you type')
+    assert.match(await items.first().innerText(), /^\/compact/)
+    await page.getByTestId('palette-desc').getByText('Resume la conversación').waitFor({ timeout: t })
+    await composer.press('ArrowDown')
+    assert.equal(await items.nth(1).locator('xpath=..').getAttribute('aria-selected'), 'true', 'ArrowDown moves the highlight')
+    await page.getByTestId('palette-desc').getByText(/Empieza una conversación nueva/).waitFor({ timeout: t })
+    await composer.press('ArrowUp')
+    assert.equal(await items.first().locator('xpath=..').getAttribute('aria-selected'), 'true')
+    await composer.press('Escape')
+    assert.equal(await palette.count(), 0, 'Esc closes the palette')
+    assert.equal(await composer.inputValue(), '/c', 'Esc keeps the draft')
+    assert.equal(bytes(), '', 'nothing written by browsing the palette')
+    await composer.fill('/dep')
+    await items.first().click() // mouse pick
+    assert.equal(await composer.inputValue(), '/deploy ', 'a pick fills `/name ` (no send)')
+    assert.equal(bytes(), '', 'a pick writes nothing')
+    await composer.fill('/comp')
+    await composer.press('Enter')
+    assert.equal(await composer.inputValue(), '/compact ')
+    assert.equal(bytes(), '')
+    await composer.press('Enter')
+    await poll(() => bytes() === `${PS}/compact${PE}\r`, 'the send pasted exactly /compact + CR')
+    await poll(() => cmds().includes('CMD:/compact'), 'the CLI received /compact as a command')
+    await state('working')
+    await page.getByText(/Conversación compactada/).first().waitFor({ timeout: t })
+    await state('idle')
+
+    // ---- a command that opens a picker: the terminal opens by itself right after the send ----
+    let m = bytes().length
+    await composer.fill('/mod')
+    await items.first().waitFor({ timeout: t })
+    assert.ok((await palette.innerText()).includes('abre un selector'), 'interactive commands are marked in the palette')
+    await composer.press('Enter')
+    assert.equal(await composer.inputValue(), '/model ')
+    await composer.press('Enter')
+    await poll(() => bytes().slice(m) === `${PS}/model${PE}\r`, '/model pasted')
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await page.getByRole('alert').filter({ hasText: '/model abre un selector' }).waitFor({ timeout: t })
+    assert.equal(await chat.isVisible(), false, 'the picker command opened the terminal')
+    await backToChat()
+
+    // ---- `@`: project files only, inserted as @path, sent as part of the paste ----
+    m = bytes().length
+    await composer.pressSequentially('mira @')
+    await palette.waitFor({ timeout: t })
+    await poll(async () => (await items.count()) >= 2, '@ list loaded')
+    const files = await items.allInnerTexts()
+    assert.deepEqual(files.map((x) => x.trim()).sort(), ['README.md', 'src/app.ts'], `only project files are listed (got ${files.join(', ')})`)
+    for (const bad of ['node_modules', '.env', '.git', 'link-out', 'dir-out', 'secret', 'espacio']) assert.ok(!files.some((f) => f.includes(bad)), `${bad} is not listed`)
+    assert.equal(bytes().slice(m), '', '`@` writes nothing to the pty')
+    await composer.pressSequentially('app')
+    assert.equal(await items.count(), 1)
+    await composer.press('Enter')
+    assert.equal(await composer.inputValue(), 'mira @src/app.ts ')
+    assert.equal(bytes().slice(m), '')
+    await composer.press('Enter')
+    await poll(() => bytes().slice(m) === `${PS}mira @src/app.ts${PE}\r`, 'the mention travelled inside the paste')
+    await chat.getByText('Respuesta a: mira @src/app.ts').waitFor({ timeout: t })
+    await state('idle')
+
+    // ---- "+" menu: attach (inserts @ and opens the file list) and commands ----
+    m = bytes().length
+    await pick('plus-menu', 'Adjuntar archivo…')
+    assert.equal(await composer.inputValue(), '@')
+    await palette.waitFor({ timeout: t })
+    await poll(async () => (await items.count()) === 2, 'file list from the + menu')
+    await composer.press('Escape')
+    await composer.fill('')
+    await pick('plus-menu', 'Comandos /')
+    assert.equal(await composer.inputValue(), '/')
+    await palette.waitFor({ timeout: t })
+    await composer.fill('')
+    assert.equal(bytes().slice(m), '', 'the + menu writes nothing')
+
+    // ---- mode: Shift+Tab one press at a time, verified against the footer, exact bytes ----
+    m = bytes().length
+    await pick('info-mode', 'Plan')
+    await poll(async () => (await label('info-mode')) === 'Plan', 'mode is Plan')
+    assert.equal(bytes().slice(m), '\x1b[Z\x1b[Z', 'manual -> plan = exactly two Shift+Tab')
+    m = bytes().length
+    await page.getByTestId('info-mode').click()
+    await page.getByRole('menuitem', { name: 'Auto', exact: true }).click()
+    const auto = page.getByRole('dialog', { name: 'Cambiar a modo Auto' })
+    await auto.waitFor({ timeout: t })
+    assert.equal(await auto.getByRole('button', { name: 'Cancelar' }).evaluate((el) => el === document.activeElement), true, 'the safe button has the focus')
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'nothing before the confirmation')
+    await auto.getByRole('button', { name: 'Cancelar' }).click()
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'cancelling sends nothing')
+    assert.equal(await label('info-mode'), 'Plan')
+    await page.getByTestId('info-mode').click()
+    await page.getByRole('menuitem', { name: 'Auto', exact: true }).click()
+    await auto.getByRole('button', { name: 'Cambiar a Auto' }).click()
+    await poll(async () => (await label('info-mode')) === 'Auto', 'mode is Auto')
+    assert.equal(bytes().slice(m), '\x1b[Z', 'plan -> auto = one press')
+    m = bytes().length
+    await pick('info-mode', 'Manual')
+    await poll(async () => (await label('info-mode')) === 'Manual', 'mode is Manual')
+    assert.equal(bytes().slice(m), '\x1b[Z', 'auto -> manual wraps with one press')
+    // Plan -> Manual crosses Auto (the cycle only goes forward): it asks first, with the safe button focused
+    await pick('info-mode', 'Plan')
+    await poll(async () => (await label('info-mode')) === 'Plan', 'mode is Plan again')
+    m = bytes().length
+    await pick('info-mode', 'Plan') // already active: a no-op, no dialog, no key
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'choosing the active mode sends nothing')
+    assert.equal(await page.getByRole('dialog').count(), 0, 'and shows no dialog')
+    await page.getByTestId('info-mode').click()
+    await page.getByRole('menuitem', { name: 'Manual', exact: true }).click()
+    const thru = page.getByRole('dialog', { name: 'Cambiar a modo Auto' })
+    await thru.waitFor({ timeout: t })
+    assert.ok((await thru.innerText()).includes('pasa un momento por el modo Auto'), 'the dialog says the cycle passes through Auto')
+    assert.equal(await thru.getByRole('button', { name: 'Cancelar' }).evaluate((el) => el === document.activeElement), true)
+    await thru.getByRole('button', { name: 'Cancelar' }).click()
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'cancelling sends nothing')
+    await page.getByTestId('info-mode').click()
+    await page.getByRole('menuitem', { name: 'Manual', exact: true }).click()
+    await thru.getByRole('button', { name: 'Continuar' }).click()
+    await poll(async () => (await label('info-mode')) === 'Manual', 'mode is Manual after crossing Auto')
+    assert.equal(bytes().slice(m), '\x1b[Z\x1b[Z', 'plan -> auto -> manual = two presses')
+    // stranded in Auto: Plan -> Manual, the CLI ignores the 2nd press -> it stays in Auto: the terminal opens and a persistent error says so
+    await pick('info-mode', 'Plan')
+    await poll(async () => (await label('info-mode')) === 'Plan', 'mode is Plan before the stranding test')
+    writeFileSync(ctl, 'dropsecond')
+    await page.waitForTimeout(400)
+    m = bytes().length
+    await page.getByTestId('info-mode').click()
+    await page.getByRole('menuitem', { name: 'Manual', exact: true }).click()
+    await thru.getByRole('button', { name: 'Continuar' }).click()
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await page.getByRole('alert').filter({ hasText: 'quedó en modo Auto' }).waitFor({ timeout: t })
+    assert.equal(bytes().slice(m), '\x1b[Z\x1b[Z', 'two presses were sent, the CLI ignored the second')
+    await page.getByRole('alert').filter({ hasText: 'quedó en modo Auto' }).getByRole('button', { name: 'Cerrar aviso' }).click() // errors stay until dismissed
+    writeFileSync(ctl, '')
+    await page.waitForTimeout(400)
+    await backToChat()
+    assert.equal(await label('info-mode'), 'Auto', 'the footer says the CLI really is in Auto')
+    await pick('info-mode', 'Manual') // back to Manual (auto -> manual does not cross Auto again)
+    await poll(async () => (await label('info-mode')) === 'Manual', 'mode is Manual again')
+    // a CLI that ignores the key: one press, the footer did not move -> stop and open the terminal (no more keys)
+    m = bytes().length
+    writeFileSync(ctl, 'dropkey')
+    await page.waitForTimeout(400)
+    await pick('info-mode', 'Aceptar ediciones')
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await page.getByRole('alert').filter({ hasText: 'no pudo comprobar el modo' }).waitFor({ timeout: t })
+    assert.equal(bytes().slice(m), '\x1b[Z', 'a press that changed nothing stops the cycle')
+    writeFileSync(ctl, '')
+    await page.waitForTimeout(400)
+    await backToChat()
+
+    // ---- model: warning first, then /model <name> ----
+    m = bytes().length
+    await pick('info-model', 'Sonnet')
+    const mdl = page.getByRole('dialog', { name: 'Cambiar el modelo' })
+    await mdl.waitFor({ timeout: t })
+    assert.ok((await mdl.innerText()).includes('predeterminado de la cuenta'), 'the dialog says the account default changes')
+    assert.equal(await mdl.getByRole('button', { name: 'Cancelar' }).evaluate((el) => el === document.activeElement), true)
+    await mdl.getByRole('button', { name: 'Cancelar' }).click()
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'cancelling sends nothing')
+    await pick('info-model', 'Sonnet')
+    await mdl.getByRole('button', { name: 'Cambiar a Sonnet' }).click()
+    await poll(() => bytes().slice(m) === `${PS}/model sonnet${PE}\r`, '/model sonnet pasted')
+    await poll(async () => (await label('info-model')).includes('sonnet'), 'the current model follows the transcript')
+    await state('idle')
+
+    // ---- context ring ----
+    const ring = page.getByTestId('info-context')
+    await ring.waitFor({ timeout: t })
+    assert.match((await ring.getAttribute('title')) ?? '', /^\d[\d.,]* tokens de contexto/)
+    assert.equal(await ring.locator('svg').count(), 1, 'a known model family gets a ring')
+
+    // ---- compact and clear from the "…" menu ----
+    m = bytes().length
+    await pick('more-menu', 'Compactar conversación')
+    await poll(() => bytes().slice(m) === `${PS}/compact${PE}\r`, 'Compactar pasted /compact (no confirmation)')
+    await state('working')
+    await state('idle')
+    m = bytes().length
+    await pick('more-menu', 'Limpiar conversación')
+    const clr = page.getByRole('dialog', { name: 'Limpiar la conversación' })
+    await clr.waitFor({ timeout: t })
+    assert.equal(await clr.getByRole('button', { name: 'Cancelar' }).evaluate((el) => el === document.activeElement), true)
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'nothing before the confirmation')
+    await clr.getByRole('button', { name: 'Cancelar' }).click()
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '')
+    await pick('more-menu', 'Limpiar conversación')
+    await clr.getByRole('button', { name: 'Limpiar', exact: true }).click()
+    await poll(() => bytes().slice(m) === `${PS}/clear${PE}\r`, 'Limpiar pasted /clear')
+    await poll(async () => (await chat.getByText('Respuesta a: mira @src/app.ts').count()) === 0, 'the chat follows the new session (the old one is gone)')
+    assert.equal(readdirSync(join(cfg, 'projects', enc)).filter((f) => f.endsWith('.jsonl')).length, 2, '/clear opened a second session file')
+    await composer.fill('tras clear')
+    await composer.press('Enter')
+    await chat.getByText('Respuesta a: tras clear').waitFor({ timeout: t })
+    await state('idle')
+
+    // ---- busy: palettes work on the draft, controls and sends do nothing ----
+    await composer.fill('trabaja un rato')
+    await composer.press('Enter')
+    await state('working')
+    m = bytes().length
+    await page.getByTestId('info-mode').click()
+    assert.equal(await page.getByRole('menuitem', { name: 'Plan', exact: true }).isDisabled(), true, 'mode items are disabled while working')
+    await page.getByTestId('info-model').click()
+    assert.equal(await page.getByRole('menuitem', { name: 'Haiku', exact: true }).isDisabled(), true)
+    await page.getByTestId('more-menu').click()
+    assert.equal(await page.getByRole('menuitem', { name: 'Compactar conversación' }).isDisabled(), true)
+    assert.equal(await page.getByRole('menuitem', { name: 'Limpiar conversación' }).isDisabled(), true)
+    await page.getByRole('menuitem', { name: 'Compactar conversación' }).click({ force: true, timeout: 1000 }).catch(() => undefined)
+    await composer.fill('/comp')
+    await palette.waitFor({ timeout: t })
+    await composer.press('Enter') // picks
+    await composer.press('Enter') // blocked: working
+    await page.getByTestId('composer-hint').getByText(/Espera a que el CLI termine/).waitFor({ timeout: t })
+    await page.waitForTimeout(400)
+    assert.equal(bytes().slice(m), '', 'nothing was written while the CLI was busy')
+    await composer.fill('')
+    await page.getByRole('button', { name: 'Parar', exact: true }).click()
+    await state('idle')
+
+    // ---- fits with the palette open, screenshots ----
+    await composer.fill('/')
+    await palette.waitFor({ timeout: t })
+    for (const size of [[1280, 800], [900, 600]]) {
+      await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].setSize(s[0], s[1]), size)
+      await page.waitForTimeout(500)
+      assert.deepEqual(await mainOverflow(page, true), [], `main content overflows with the palette open (${size[0]}px)`)
+      await sidebarFits(page, `palette ${size[0]}px`)
+      const pb = await palette.boundingBox()
+      const cb = await page.locator('main').boundingBox()
+      assert.ok(pb && cb && pb.x >= cb.x - 0.5 && pb.x + pb.width <= cb.x + cb.width + 0.5 && pb.y >= 0, `the palette stays inside the window (${size[0]}px)`)
+      const ab = await page.getByTestId('activity').boundingBox()
+      assert.ok(ab && pb.y + pb.height <= ab.y + 1, `the palette does not cover the activity line (${size[0]}px)`)
+      const db = await page.getByTestId('palette-desc').boundingBox()
+      assert.ok(db && db.x + db.width <= cb.x + cb.width + 0.5, `the description card stays inside main (${size[0]}px)`)
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.waitForTimeout(500)
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await composer.fill('/')
+    await composer.press('ArrowDown')
+    await page.waitForTimeout(500)
+    await page.screenshot({ path: join(shots, 'palette-dark.png') })
+    await composer.fill('')
+    for (const scheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme: scheme })
+      await page.waitForTimeout(400)
+      if (scheme === 'dark') await page.getByTestId('info-mode').click()
+      await page.waitForTimeout(300)
+      await page.screenshot({ path: join(shots, `controls-${scheme}.png`) })
+      await composer.click()
+    }
+    await page.emulateMedia({ colorScheme: null })
+    for (const b of ['\x03', '\x04', '\x1a']) assert.ok(!bytes().includes(b), `no ${JSON.stringify(b)} ever reached the pty`)
     assert.ok(!existsSync(join(d.home, '.claude')), 'nothing written outside the temp HOME')
   } finally {
     await app.close()

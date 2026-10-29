@@ -1,6 +1,6 @@
 import * as pty from 'node-pty'
 import type { AnswerAction } from '../shared/prompt'
-import { STOP, answerSteps, clearSteps, pasteBytes } from './bridge'
+import { KEYS, type KeyName, STOP, answerSteps, clearSteps, pasteBytes } from './bridge'
 import { terminate } from './handoff'
 
 interface Entry {
@@ -63,6 +63,14 @@ export function sendPty(id: number, text: string, seq: number): Written {
   e.proc.write(pasteBytes(text))
   return 'ok'
 }
+/** Allowlisted key (F6.5: Shift+Tab), same stale guard as send: nothing is written if more output arrived than the renderer had parsed. */
+export function keyPty(id: number, key: KeyName, seq: number): Written {
+  const e = touch(id)
+  if (!e) return 'gone'
+  if (e.seq !== seq) return 'stale'
+  e.proc.write(KEYS[key])
+  return 'ok'
+}
 /** Stop: exactly one ESC (no guard: ESC landing on a new dialog is a cancel, the safe direction). */
 export function stopPty(id: number): boolean {
   const e = touch(id)
@@ -98,6 +106,7 @@ export async function answerPty(id: number, seq: number, action: AnswerAction, g
   if (e.seq === seq) ((e.answered = seq), (e.awaitingLine = action.kind === 'text')) // writeSteps cleared the flag; a text digit arms it again
   return await run
 }
+export const ptyCwd = (id: number): string | undefined => ptys.get(id)?.cwd
 export const resizePty = (id: number, c: number, r: number): void => ptys.get(id)?.proc.resize(c, r)
 
 /** Kills only this pty; resolves once it has really exited (SIGKILL after 3s). */

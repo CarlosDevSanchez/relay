@@ -16,6 +16,8 @@ export const IconKebab = () => <Svg d="M8 3.5v.01M8 8v.01M8 12.5v.01" size={16} 
 export const IconGear = () => <Svg d="M8 10a2 2 0 100-4 2 2 0 000 4zM8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
 export const IconLink = () => <Svg d="M6.5 9.5l3-3M7 4.5l1-1a2.5 2.5 0 013.5 3.5l-1 1M9 11.5l-1 1A2.5 2.5 0 014.5 9l1-1" size={12} />
 export const IconFolder = () => <Svg d="M2 4.5A1.5 1.5 0 013.5 3H6l1.5 1.5h5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5z" />
+export const IconSend = () => <Svg size={18} d="M3 8h9M8.5 4l4 4-4 4" />
+export const IconStop = () => <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="2" /></svg>
 
 // ---- logo: relay-mark.svg inlined so it follows `currentColor` (brand teal via text-primary); `full` = relay-logo.svg with the wordmark (fixed teal, on a navy chip so it reads in the light theme) ----
 export const Logo = ({ size = 20, full = false }: { size?: number; full?: boolean }) => (

@@ -1,3 +1,4 @@
+import type { AnswerAction } from './prompt'
 export type ProviderId = 'claude' | 'codex'
 
 export const CROSS_PROVIDER = 'Claude ↔ Codex llegará después del MVP'
@@ -147,6 +148,65 @@ export interface McpReport {
   projects: { cwd: string; servers: McpServer[] }[]
 }
 
+/** F6.1 transcript view model (Claude). Built field by field in main from an allowlist; never raw lines. */
+export interface THunk { oldStart: number; oldLines: number; newStart: number; newLines: number; lines: string[] }
+export interface TDiff { file: string; hunks: THunk[]; created?: boolean; deleted?: boolean }
+/** `at` = byte offset of the line * 1000 + block index: a stable total order across pages and live batches. Events upsert by `id`. */
+interface TBase { id: string; at: number }
+export type TEvent =
+  | (TBase & { kind: 'message'; role: 'user' | 'assistant'; text: string })
+  | (TBase & { kind: 'thinking'; durationMs?: number })
+  | (TBase & {
+      kind: 'tool'
+      name: string
+      /** clipped copy of the tool input (strings/arrays/depth capped; bulky fields already in `diffs` dropped) */
+      input: unknown
+      /** pending = no tool_result yet (AskUserQuestion / ExitPlanMode pending = the CLI waits for the user) */
+      status: 'pending' | 'ok' | 'error'
+      result?: string
+      durationMs?: number
+      interrupted?: boolean
+      diffs?: TDiff[]
+      /** Agent tool: thread lives in <session>/subagents/agent-<agentId>.jsonl, requested on demand */
+      agentId?: string
+    })
+  | (TBase & {
+      kind: 'notice'
+      notice: 'compact' | 'turn' | 'rate_limit' | 'api_error' | 'info'
+      text?: string
+      durationMs?: number
+      /** rate_limit: epoch ms from quotaLimits */
+      resetsAt?: number
+      limitType?: string
+      /** api_error: the CLI's `error` value */
+      code?: string
+      preTokens?: number
+      postTokens?: number
+    })
+export interface TMeta {
+  title?: string
+  model?: string
+  permissionMode?: string
+  cwd?: string
+  gitBranch?: string
+  version?: string
+  /** usage of the last assistant message (last line of a message id wins) */
+  tokens?: { input: number; output: number; cacheRead: number; cacheCreate: number }
+}
+export interface TBatch {
+  accountId: string
+  sessionId: string
+  /** set for a subagent thread */
+  agentId?: string
+  /** snapshot (has `older`) = the stream's current seq, live batches count on from it; absent on older/subagent pages */
+  seq?: number
+  events: TEvent[]
+  meta?: TMeta
+  /** byte offset to pass to `older` for earlier events; null = start of file reached; absent on live batches */
+  older?: number | null
+}
+export interface TranscriptRef { accountId: string; cwd: string; sessionId: string }
+
 export interface RelayApi {
   accounts: {
     list(): Promise<Account[]>
@@ -190,7 +250,16 @@ export interface RelayApi {
     kill(ptyId: number): Promise<void>
     write(ptyId: number, data: string): void
     resize(ptyId: number, cols: number, rows: number): void
-    onData(cb: (ptyId: number, data: string) => void): () => void
+    /** composer (F6.3): main wraps the sanitized text in a bracketed paste + Enter; `seq` = last output chunk parsed by the renderer, 'stale' = more output arrived since (nothing written) */
+    send(ptyId: number, text: string, seq: number): Promise<'ok' | 'stale' | 'gone'>
+    /** Stop: main writes exactly one ESC */
+    stop(ptyId: number): Promise<boolean>
+    /** empties the CLI's input box (fixed allowlist in main: `\x15`, preceded by ESC when a `/` or `@` list is open) */
+    clear(ptyId: number, opts: { overlay: boolean }, seq: number): Promise<'ok' | 'stale' | 'gone'>
+    /** prompt card (F6.4): one action from the closed allowlist; main builds the keys. `seq` as in send, 'stale' = nothing written */
+    answer(ptyId: number, seq: number, action: AnswerAction): Promise<'ok' | 'stale' | 'gone'>
+    /** `seq` numbers the output chunks of a pty (the composer bridge's stale-frame guard) */
+    onData(cb: (ptyId: number, data: string, seq: number) => void): () => void
     onExit(cb: (ptyId: number, code: number) => void): () => void
   }
   handoff(req: HandoffRequest): Promise<StartResult>
@@ -202,6 +271,14 @@ export interface RelayApi {
   }
   catalog: { list(): Promise<CatalogLocation[]>; open(accountId: string): Promise<void> }
   mcp: { list(): Promise<McpReport> }
+  transcript: {
+    /** starts live events for a Claude session; resolves with the last page (snapshot, carries the current seq) */
+    subscribe(ref: TranscriptRef): Promise<TBatch>
+    unsubscribe(ref: TranscriptRef): Promise<void>
+    older(ref: TranscriptRef, before: number): Promise<TBatch>
+    subagent(ref: TranscriptRef, agentId: string, before?: number): Promise<TBatch>
+    onEvents(cb: (b: TBatch) => void): () => void
+  }
   /** shows a test system notification; false = not supported on this system */
   notifyTest(): Promise<boolean>
   /** user chose to wait: Relay shows a notification at resetAt (never types into the CLI) */

@@ -32,6 +32,10 @@ const api: RelayApi = {
     kill: (id) => ipcRenderer.invoke('pty:kill', id),
     write: (id, d) => ipcRenderer.send('pty:write', id, d),
     resize: (id, c, r) => ipcRenderer.send('pty:resize', id, c, r),
+    send: (id, text, seq) => ipcRenderer.invoke('pty:send', id, text, seq),
+    stop: (id) => ipcRenderer.invoke('pty:stop', id),
+    clear: (id, opts, seq) => ipcRenderer.invoke('pty:clear', id, opts, seq),
+    answer: (id, seq, action) => ipcRenderer.invoke('pty:answer', id, seq, action),
     onData: (cb) => sub('pty:data', cb),
     onExit: (cb) => sub('pty:exit', cb)
   },
@@ -40,6 +44,13 @@ const api: RelayApi = {
   cli: { detect: () => ipcRenderer.invoke('cli:detect'), install: (p) => ipcRenderer.invoke('cli:install', p) },
   catalog: { list: () => ipcRenderer.invoke('catalog:list'), open: (id) => ipcRenderer.invoke('catalog:open', id) },
   mcp: { list: () => ipcRenderer.invoke('mcp:list') },
+  transcript: {
+    subscribe: (ref) => ipcRenderer.invoke('session:subscribe', ref),
+    unsubscribe: (ref) => ipcRenderer.invoke('session:unsubscribe', ref),
+    older: (ref, before) => ipcRenderer.invoke('session:older', ref, before),
+    subagent: (ref, agentId, before) => ipcRenderer.invoke('session:subagent', ref, agentId, before),
+    onEvents: (cb) => sub('session:events', cb)
+  },
   notifyTest: () => ipcRenderer.invoke('notify:test'),
   remindReset: (accountId, resetAt) => ipcRenderer.invoke('limit:remind', accountId, resetAt),
   onLimit: (cb) => sub('limit:hit', cb),

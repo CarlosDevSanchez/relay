@@ -1,6 +1,8 @@
 import { realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { type Account, CROSS_PROVIDER, type HandoffRequest, type StartRequest } from '../shared/types'
+import type { AnswerAction } from '../shared/prompt'
+import { MAX_ANSWER, MAX_SEND } from './bridge'
 import { type InstallCommand, installCommand, providers } from './providers'
 
 export const isSessionId = (s: unknown): s is string => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
@@ -86,4 +88,65 @@ export function checkSessionRef(cwd: unknown, sessionId: unknown, projects: stri
   if (typeof cwd !== 'string' || !projects.includes(cwd)) throw new Error('Unknown project')
   if (!isSessionId(sessionId)) throw new Error('Invalid session id')
   return { cwd, sessionId }
+}
+
+/** Transcript view requests: the renderer sends only ids; the file is resolved in main from the account and the session. Claude only (Codex: F6.6). */
+export function checkTranscriptRef(ref: unknown, accounts: Account[], projects: string[]): { account: Account; cwd: string; sessionId: string } {
+  const r = (ref ?? {}) as Record<string, unknown>
+  const account = checkAccountId(r.accountId, accounts)
+  if (account.provider !== 'claude') throw new Error('La vista enriquecida solo admite Claude')
+  const { cwd, sessionId } = checkSessionRef(r.cwd, r.sessionId, projects)
+  return { account, cwd, sessionId }
+}
+
+export function checkAgentId(v: unknown): string {
+  if (typeof v !== 'string' || !/^[0-9a-f]{8,64}$/i.test(v)) throw new Error('Invalid agent id')
+  return v
+}
+
+/** Byte offset returned by a previous page. */
+export function checkOffset(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) throw new Error('Invalid offset')
+  return v
+}
+
+export function checkPtyId(v: unknown): number {
+  if (!Number.isInteger(v)) throw new Error('Invalid pty id')
+  return v as number
+}
+
+/** Composer text: a string of 1..MAX_SEND chars without NUL (control characters are stripped in main when the bytes are built). */
+export function checkSendText(v: unknown): string {
+  if (typeof v !== 'string' || !v || v.length > MAX_SEND || v.includes('\0')) throw new Error('Invalid message')
+  return v
+}
+
+/** `pty:clear` options: only whether a `/` or `@` list is open; the bytes come from a fixed allowlist in main. */
+export function checkClear(v: unknown): boolean {
+  const o = (v ?? {}) as Record<string, unknown>
+  if (typeof o.overlay !== 'boolean') throw new Error('Invalid clear options')
+  return o.overlay
+}
+
+/** Output sequence the renderer last parsed (see pty.ts). */
+export function checkSeq(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) throw new Error('Invalid seq')
+  return v
+}
+
+/** The composer bridge only reaches a live pty of a Claude account that has a session (never a login / installer pty, never Codex). */
+export function checkClaudePty(info: { accountId: string; sessionId: string | undefined } | undefined, accounts: Account[]): void {
+  if (!info?.sessionId || accounts.find((a) => a.id === info.accountId)?.provider !== 'claude') throw new Error('La sesión ya no está activa')
+}
+
+/** `pty:answer` action: only the closed set of card actions, digits 1-9, text a single bounded string. */
+export function checkAnswer(v: unknown): AnswerAction {
+  const o = (v ?? {}) as Record<string, unknown>
+  const n = o.n
+  const digit = typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 9
+  if ((o.kind === 'option' || o.kind === 'toggle') && digit) return { kind: o.kind, n }
+  if (o.kind === 'next' || o.kind === 'cancel') return { kind: o.kind }
+  if (o.kind === 'text' && digit) return { kind: 'text', n }
+  if (o.kind === 'line' && typeof o.text === 'string' && o.text.length > 0 && o.text.length <= MAX_ANSWER && !o.text.includes('\0')) return { kind: 'line', text: o.text }
+  throw new Error('Invalid answer')
 }

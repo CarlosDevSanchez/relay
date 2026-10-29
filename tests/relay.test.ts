@@ -55,10 +55,10 @@ describe('store', () => {
 
 describe('env', () => {
   it('sets the config dir per provider and strips credentials', () => {
-    const base = { PATH: '/bin', ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_MESSAGING_TOKEN: 't', CLAUDECODE: '1', CLAUDE_PID: '9', CLAUDE_CONFIG_DIR: '/old', FOO: '1' }
+    const base = { PATH: '/bin', ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_MESSAGING_TOKEN: 't', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDECODE: '1', CLAUDE_PID: '9', CLAUDE_CONFIG_DIR: '/old', FOO: '1' }
     const e = buildEnv({ id: '1', label: 'a', provider: 'claude', configDir: '/c' }, base)
     expect(e.CLAUDE_CONFIG_DIR).toBe('/c')
-    for (const k of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDECODE', 'CLAUDE_PID']) expect(e[k]).toBeUndefined()
+    for (const k of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDECODE', 'CLAUDE_PID']) expect(e[k]).toBeUndefined()
     expect(e.FOO).toBe('1')
     expect(e.PATH).toContain('.local/bin')
     expect(buildEnv({ id: '2', label: 'b', provider: 'codex', configDir: '/h' }, base).CODEX_HOME).toBe('/h')

@@ -33,10 +33,17 @@ session() {
     for i in $(seq 70); do [ -f "$STUB_FIXTURE" ] && sh -c "$cmd" < "$STUB_FIXTURE" > "${tmp}/statusline-out.$(basename "$CLAUDE_CONFIG_DIR")"; sleep 1; done
   else sleep 60; fi
 }
+# scripted transcript (F6.2): with STUB_SCRIPT set, a new/resumed session appends the script's lines to its transcript over time, like the CLI writing blocks as they happen
+script() {
+  d="$CLAUDE_CONFIG_DIR/projects/$STUB_ENC"; mkdir -p "$d/$1/subagents"
+  sed "s/__SID__/$1/g" "$STUB_AGENT" > "$d/$1/subagents/agent-a1b2c3d4e5f60718.jsonl"
+  while IFS= read -r l; do printf '%s\\n' "$l" | sed "s/__SID__/$1/g" >> "$d/$1.jsonl"; sleep "\${STUB_GAP:-0.4}"; done < "$STUB_SCRIPT"
+}
 case "$1 $2" in
   "auth status") [ -n "$CLAUDE_CONFIG_DIR" ] && touch "$CLAUDE_CONFIG_DIR/.claude.json"; echo "{\\"loggedIn\\":true,\\"email\\":\\"\${STUB_EMAIL:-test@example.com}\\",\\"subscriptionType\\":\\"max\\"}" ;;
   "auth login") sleep 1; echo "Paste code here"; read -t 20 -r code; echo "CODE:$code" >> "${log}"; exit 0 ;;
-  "--session-id "*|"--resume "*) sleep 1; echo "Claude Code (stub): sesión interactiva"; session ;;
+  # the session is a fake TUI (e2e/fake-claude-tui.mjs, F6.3); the status line loop runs beside it unless STUB_KEYS logs the pty
+  "--session-id "*|"--resume "*) [ -n "$STUB_SCRIPT" ] && script "$2" & sleep 1; [ -z "$STUB_KEYS" ] && session & "$STUB_NODE" "$STUB_TUI" "$2" ;;
   *) echo "2.1.0 (Claude Code)" ;;
 esac
 `
@@ -66,7 +73,7 @@ const setup = (name) => {
   return dirs
 }
 const launch = (d, extra = {}) => {
-  const env = { ...process.env, RELAY_HOME: d.relayHome, HOME: d.home, PATH: `${d.bin}:/usr/bin:/bin`, ...extra }
+  const env = { ...process.env, RELAY_HOME: d.relayHome, HOME: d.home, PATH: `${d.bin}:/usr/bin:/bin`, STUB_NODE: process.execPath, STUB_TUI: join(root, 'e2e/fake-claude-tui.mjs'), ...extra }
   delete env.ELECTRON_RUN_AS_NODE
   return electron.launch({ args: [root, `--user-data-dir=${join(d.home, 'userdata')}`], env }) // own Chromium profile: localStorage (sidebar UI state) never leaks between scenarios or into a real app profile
 }
@@ -111,6 +118,37 @@ const sidebarFits = async (page, state) => {
   })
   assert.deepEqual(sx, [0, 0, 0, 0], `focus pass scrolled the shell (${state})`)
 }
+
+// the main area stays inside its box and nothing overflows its own box unless it truncates (xterm, native <select>, daisyUI .tab and [data-scroll] boxes, which scroll on purpose, are exempt)
+const mainOverflow = (page, withTab) =>
+  page.evaluate((withTab) => {
+    const m = document.querySelector('main')
+    const out = []
+    if (m.scrollWidth > m.clientWidth) out.push(`main scrollWidth ${m.scrollWidth} > ${m.clientWidth}`)
+    const mr = m.getBoundingClientRect()
+    const isBox = (el) => /flex|grid/.test(getComputedStyle(el).display)
+    for (const el of m.querySelectorAll('*')) {
+      if (getComputedStyle(el).visibility === 'hidden' || !el.clientWidth) continue
+      const r = el.getBoundingClientRect()
+      if (r.right > mr.right + 0.5) out.push(`${el.tagName} right ${Math.round(r.right)} > ${Math.round(mr.right)}`)
+      if (el.closest('.xterm, [data-scroll]') || el.tagName === 'SELECT' || el.classList.contains('tab')) continue // exempt: xterm's own scrolling viewport; native <select> (scrollWidth = option width); daisyUI .tab (tabs-lift corner pseudo-elements stick out ~8px, children are still checked against main's box)
+      const cs = getComputedStyle(el)
+      if (el.scrollWidth > el.clientWidth + 1 && (cs.textOverflow !== 'ellipsis' || isBox(el))) out.push(`overflow ${el.tagName}.${String(el.className).slice(0, 40)} ${el.scrollWidth}>${el.clientWidth}`)
+    }
+    // account-label badges: the text keeps its start and ends in a real ellipsis
+    const badges = m.querySelectorAll('.badge.max-w-28, .badge.max-w-40')
+    if (withTab && badges.length !== 2) out.push(`expected 2 account-label badges (tab bar + header strip), found ${badges.length}`)
+    for (const b of badges) {
+      const sp = b.querySelector('span.truncate')
+      if (!sp) { out.push(`badge without inner truncate span: ${b.textContent}`); continue }
+      const cs = getComputedStyle(sp), bs = getComputedStyle(b)
+      const inner = b.getBoundingClientRect().left + parseFloat(bs.paddingLeft) + parseFloat(bs.borderLeftWidth)
+      if (cs.textOverflow !== 'ellipsis' || isBox(sp)) out.push(`badge span not ellipsising: ${b.textContent}`)
+      if (sp.getBoundingClientRect().left < inner - 0.5) out.push(`badge text clipped on the left: ${b.textContent}`)
+      if (sp.scrollWidth <= sp.clientWidth) out.push(`badge label not long enough to truncate: ${b.textContent}`)
+    }
+    return out
+  }, !!withTab)
 
 // ---- scenario 1: claude present, candidate dirs, onboarding -> dashboard ----
 {
@@ -713,34 +751,7 @@ const sidebarFits = async (page, state) => {
     const mainFits = async (size, withTab) => {
       const what = withTab ? 'tab open' : 'empty state'
       await (withTab ? page.getByRole('tab').first() : page.getByRole('button', { name: /^x{100}/ }).last()).waitFor({ timeout: t })
-      const bad = await page.evaluate((withTab) => {
-        const m = document.querySelector('main')
-        const out = []
-        if (m.scrollWidth > m.clientWidth) out.push(`main scrollWidth ${m.scrollWidth} > ${m.clientWidth}`)
-        const mr = m.getBoundingClientRect()
-        const isBox = (el) => /flex|grid/.test(getComputedStyle(el).display)
-        for (const el of m.querySelectorAll('*')) {
-          if (getComputedStyle(el).visibility === 'hidden' || !el.clientWidth) continue
-          const r = el.getBoundingClientRect()
-          if (r.right > mr.right + 0.5) out.push(`${el.tagName} right ${Math.round(r.right)} > ${Math.round(mr.right)}`)
-          if (el.closest('.xterm') || el.tagName === 'SELECT' || el.classList.contains('tab')) continue // exempt: xterm's own scrolling viewport; native <select> (scrollWidth = option width); daisyUI .tab (tabs-lift corner pseudo-elements stick out ~8px, children are still checked against main's box)
-          const cs = getComputedStyle(el)
-          if (el.scrollWidth > el.clientWidth + 1 && (cs.textOverflow !== 'ellipsis' || isBox(el))) out.push(`overflow ${el.tagName}.${String(el.className).slice(0, 40)} ${el.scrollWidth}>${el.clientWidth}`)
-        }
-        // account-label badges: the text keeps its start and ends in a real ellipsis
-        const badges = m.querySelectorAll('.badge.max-w-28, .badge.max-w-40')
-        if (withTab && badges.length !== 2) out.push(`expected 2 account-label badges (tab bar + header strip), found ${badges.length}`)
-        for (const b of badges) {
-          const sp = b.querySelector('span.truncate')
-          if (!sp) { out.push(`badge without inner truncate span: ${b.textContent}`); continue }
-          const cs = getComputedStyle(sp), bs = getComputedStyle(b)
-          const inner = b.getBoundingClientRect().left + parseFloat(bs.paddingLeft) + parseFloat(bs.borderLeftWidth)
-          if (cs.textOverflow !== 'ellipsis' || isBox(sp)) out.push(`badge span not ellipsising: ${b.textContent}`)
-          if (sp.getBoundingClientRect().left < inner - 0.5) out.push(`badge text clipped on the left: ${b.textContent}`)
-          if (sp.scrollWidth <= sp.clientWidth) out.push(`badge label not long enough to truncate: ${b.textContent}`)
-        }
-        return out
-      }, !!withTab)
+      const bad = await mainOverflow(page, withTab)
       assert.deepEqual(bad, [], `main content overflows with an unbroken session title / long label (${size[0]}px, ${what})`)
     }
     const states = async (size) => {
@@ -770,6 +781,728 @@ const sidebarFits = async (page, state) => {
   }
 }
 
+// ---- scenario 9: conversation view (F6.2): a scripted transcript is written live by the stub; cards, diffs, inert markdown, chat-first layout, Chat/Terminal toggle, scrolling, fits, light/dark shots ----
+{
+  const d = setup('nine')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  const proj = join(d.home, 'chat-app')
+  mkdirSync(proj)
+  const cwd = realpathSync(proj)
+  const cfg = join(d.home, 'cfg-chat')
+  mkdirSync(cfg)
+  writeFileSync(join(cfg, '.claude.json'), '{}')
+  mkdirSync(d.relayHome, { recursive: true })
+  writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([cwd]))
+  writeFileSync(join(d.relayHome, 'accounts.json'), JSON.stringify([{ id: 'cccccccc', label: 'Personal CarlosDev con una etiqueta de cuenta muy larga', provider: 'claude', configDir: cfg }]))
+  // synthetic transcript (the shapes of tests/fixtures/transcript); __SID__ is replaced by the stub
+  let n = 0
+  const ts = () => new Date(Date.UTC(2026, 0, 1, 12, 0, n++)).toISOString()
+  const common = (type) => ({ parentUuid: null, isSidechain: false, userType: 'external', cwd, sessionId: '__SID__', version: '2.1.312', gitBranch: 'main', uuid: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, timestamp: ts(), type })
+  const user = (content, extra = {}) => ({ ...common('user'), message: { role: 'user', content }, ...extra })
+  const asst = (mid, idx, block, extra = {}) => ({ ...common('assistant'), requestId: `req_${mid}`, apiBlockIndex: idx, ...extra, message: { id: `msg_${mid}`, type: 'message', role: 'assistant', model: 'claude-fake-1', content: [block], stop_reason: 'tool_use', usage: { input_tokens: 3, output_tokens: 5 } } })
+  const use = (mid, id, name, input) => asst(mid, 0, { type: 'tool_use', id, name, input })
+  const res = (id, content, toolUseResult, isErr = false) => user([{ type: 'tool_result', tool_use_id: id, content, ...(isErr ? { is_error: true } : {}) }], toolUseResult === undefined ? {} : { toolUseResult })
+  const hello = ['```ts', 'export const suma = (a: number, b: number) => a + b', '// <script>window.__pwn = 0</script>', '```']
+  const long = Array.from({ length: 14 }, (_, i) => `${i + 1}. Paso ${i + 1} del plan sintético`).join('\n')
+  const script = [
+    { type: 'ai-title', aiTitle: 'Chat sintético', sessionId: '__SID__' },
+    user('Crea una función suma y pruébala.'),
+    asst('a1', 0, { type: 'thinking', thinking: '', signature: 'x' }, { thinkingDurationMs: 4000 }),
+    asst('a1', 1, { type: 'text', text: `Voy a **crear** la función y probarla.\n\n${hello.join('\n')}\n\n${long}` }),
+    asst('a2', 0, { type: 'text', text: 'Sin HTML crudo: <script>window.__pwn = 1</script> y <img src=x onerror="window.__pwn = 2"> y [enlace](javascript:window.__pwn=3) y ![img](https://example.com/x.png)' }),
+    use('a3', 'tb1', 'Bash', { command: 'bun test' }),
+    res('tb1', 'SALIDA-OK-SINTETICA', { stdout: 'SALIDA-OK-SINTETICA', stderr: '', interrupted: false }),
+    use('a4', 'tb2', 'Bash', { command: 'false' }),
+    res('tb2', 'FALLO-SINTETICO', { stdout: '', stderr: 'FALLO-SINTETICO', interrupted: false }, true),
+    use('a5', 'te1', 'Edit', { file_path: `${cwd}/suma.ts`, old_string: 'a', new_string: 'b' }),
+    res('te1', 'edited', { filePath: `${cwd}/suma.ts`, structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: ['-export const a = 1', '+export const a = 2', '+export const b = 3'] }] }),
+    use('a6', 'tw1', 'Write', { file_path: `${cwd}/nuevo.ts`, content: 'let b = 1\n' }),
+    res('tw1', 'created', { type: 'create', filePath: `${cwd}/nuevo.ts`, content: 'let b = 1\n', structuredPatch: [] }),
+    use('a7', 'tr1', 'Read', { file_path: `${cwd}/suma.ts` }),
+    res('tr1', 'uno\ndos\ntres', 'uno\ndos\ntres'),
+    use('a8', 'tf1', 'WebFetch', { url: 'https://docs.example.com/guia?x=1', prompt: 'resume' }),
+    res('tf1', 'resumen', 'resumen'),
+    use('a9', 'tg1', 'Agent', { description: 'Explora el repo', subagent_type: 'general', prompt: 'busca' }),
+    res('tg1', 'Async agent launched', { status: 'async_launched', agentId: 'a1b2c3d4e5f60718' }),
+    use('a10', 'tk1', 'TodoWrite', { todos: [{ content: 'tarea sintética', status: 'pending' }] }),
+    res('tk1', 'ok', 'ok'),
+    { ...common('system'), subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata: { trigger: 'auto', preTokens: 120000, postTokens: 8000 } },
+    { ...common('system'), subtype: 'turn_duration', durationMs: 64000 },
+    use('a11', 'tq1', 'AskUserQuestion', { questions: [{ question: '¿Sigo con las pruebas?', header: 'Sigo', multiSelect: false, options: [{ label: 'Sí', description: 'continúa' }, { label: 'No', description: 'detente' }] }] })
+  ]
+  const sub = [
+    { ...common('user'), isSidechain: true, message: { role: 'user', content: 'busca' } },
+    { ...asst('s1', 0, { type: 'text', text: 'Hallazgo del subagente.' }), isSidechain: true }
+  ]
+  const lines = (a) => a.map((x) => JSON.stringify(x)).join('\n') + '\n'
+  writeFileSync(join(tmp, 'chat-script.jsonl'), lines(script))
+  writeFileSync(join(tmp, 'chat-agent.jsonl'), lines(sub))
+  const app = await launch(d, { STUB_SCRIPT: join(tmp, 'chat-script.jsonl'), STUB_AGENT: join(tmp, 'chat-agent.jsonl'), STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-'), STUB_GAP: '0.3', STUB_KEYS: join(tmp, 'chat-keys.log') })
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.getByTestId('account-card').first().waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    const chat = page.getByTestId('chat-pane')
+    const cards = chat.getByTestId('tool-card')
+    await chat.getByText('Crea una función suma y pruébala.').waitFor({ timeout: t })
+    // live: the first message shows up before the later blocks are written
+    assert.equal(await cards.filter({ hasText: 'suma.ts' }).count(), 0, 'the Edit card does not exist yet when the first message appears')
+    // chat-first: the chat covers the terminal's box; the terminal is mounted but not visible
+    const term = page.getByTestId('terminal-pane')
+    await term.locator('.xterm').waitFor({ state: 'attached', timeout: t })
+    const [cb, tb] = await Promise.all([chat.boundingBox(), term.boundingBox()])
+    assert.ok(cb && tb && cb.width > 400 && Math.abs(cb.width - tb.width) < 1 && Math.abs(cb.height - tb.height) < 1, 'the chat takes the whole session area, same box as the terminal')
+    assert.equal(await term.locator('.xterm').isVisible(), false, 'the terminal is hidden in chat view')
+    const keys = () => (existsSync(join(tmp, 'chat-keys.log')) ? readFileSync(join(tmp, 'chat-keys.log'), 'utf8').split('\n') : [])
+    const sizes = () => keys().filter((l) => l.startsWith('SIZE:')).map((l) => Number(l.split(' ')[1]))
+    const bytes = () => keys().filter((l) => l.startsWith('BYTES:')).map((l) => JSON.parse(l.slice(6))).join('')
+    const poll = async (fn, what) => {
+      for (let i = 0; i < 50; i++) {
+        if (fn()) return
+        await new Promise((r) => setTimeout(r, 200))
+      }
+      assert.fail(`timeout: ${what}`)
+    }
+    await poll(() => sizes().length, 'the stub reported its pty size')
+    const colsChat = sizes().at(-1)
+
+    await chat.getByText('Pensó 4 s').waitFor({ timeout: t })
+    await chat.getByText('Voy a crear la función y probarla.').waitFor({ timeout: t })
+    await chat.locator('pre code').first().waitFor({ timeout: t })
+    assert.ok(await chat.locator('pre code .hljs-keyword').count(), 'code is highlighted (token spans)')
+    await chat.getByRole('button', { name: 'Copiar código' }).first().waitFor({ timeout: t })
+    // bash: command in the header, output folded; the error card shows its state
+    const ok = cards.filter({ hasText: 'bun test' })
+    await ok.waitFor({ timeout: t })
+    assert.equal(await ok.getByText('SALIDA-OK-SINTETICA').isVisible(), false, 'stdout is folded')
+    await ok.locator('summary').first().click()
+    await ok.getByText('Salida', { exact: true }).click()
+    await ok.getByText('SALIDA-OK-SINTETICA').waitFor({ timeout: t })
+    const bad = cards.filter({ hasText: 'false' }).first()
+    await bad.getByText('error', { exact: true }).waitFor({ timeout: t })
+    await bad.getByText('FALLO-SINTETICO').waitFor({ timeout: t }) // errors open by default
+    // edit: coloured diff with counts; write: created
+    const edit = cards.filter({ hasText: 'suma.ts' }).first()
+    await edit.getByText('+export const b = 3').waitFor({ timeout: t })
+    assert.match(await edit.getByTestId('diff').textContent(), /\+2.*−1/)
+    const head = edit.getByTestId('diff').locator('span').first()
+    assert.equal(await head.textContent(), 'suma.ts', 'diff header is relative to the project')
+    assert.equal(await head.getAttribute('title'), `${cwd}/suma.ts`, 'absolute path in the title')
+    const addBg = await edit.getByText('+export const b = 3').evaluate((el) => getComputedStyle(el).backgroundColor)
+    const delBg = await edit.getByText('-export const a = 1').evaluate((el) => getComputedStyle(el).backgroundColor)
+    assert.ok(addBg !== delBg && addBg !== 'rgba(0, 0, 0, 0)' && delBg !== 'rgba(0, 0, 0, 0)', `diff lines are coloured (${addBg} / ${delBg})`)
+    const wr = cards.filter({ hasText: 'nuevo.ts' }).first()
+    await wr.getByText('creado', { exact: true }).waitFor({ timeout: t })
+    await cards.filter({ hasText: 'docs.example.com' }).first().waitFor({ timeout: t })
+    await cards.filter({ hasText: 'TodoWrite' }).first().waitFor({ timeout: t }) // generic card
+    // subagent: lazy nested thread
+    const ag = cards.filter({ hasText: 'Explora el repo' }).first()
+    await ag.waitFor({ timeout: t })
+    assert.equal(await chat.getByText('Hallazgo del subagente.').count(), 0, 'the subagent thread is not loaded until opened')
+    await ag.locator('summary').first().click()
+    await ag.getByTestId('subthread').getByText('Hallazgo del subagente.').waitFor({ timeout: t })
+    // notices and the pending ask
+    await chat.getByText(/Conversación compactada · 120k → 8k tokens/).waitFor({ timeout: t })
+    await chat.getByText('Turno de 1 min 4 s').waitFor({ timeout: t })
+    const q = cards.filter({ hasText: 'AskUserQuestion' }).first()
+    await q.getByText('¿Sigo con las pruebas?').first().waitFor({ timeout: t })
+
+    // security: nothing from the transcript became markup or a navigation
+    await chat.getByText('<script>window.__pwn = 1</script>').first().waitFor({ timeout: t })
+    assert.equal(await chat.locator('script, img, iframe, a[href], [onerror]').count(), 0, 'no script/img/iframe/link/handler elements in the chat')
+    assert.equal(await page.evaluate(() => window.__pwn), undefined, 'no injected script ran')
+    assert.equal(await chat.getByText('enlace').evaluate((el) => el.tagName), 'SPAN', 'links are inert')
+
+    // follow the end, then scroll up: "Ir al último" appears and works
+    const box = chat.getByTestId('conversation').locator('> div').first()
+    const dist = () => box.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)
+    await page.waitForTimeout(500)
+    assert.ok((await dist()) < 60, 'the view follows the end')
+    assert.equal(await chat.getByRole('button', { name: 'Ir al último' }).count(), 0)
+    assert.ok(await box.evaluate((el) => el.scrollHeight > el.clientHeight + 200), 'the transcript is taller than the pane')
+    await box.evaluate((el) => (el.scrollTop = 0))
+    const last = chat.getByRole('button', { name: 'Ir al último' })
+    await last.waitFor({ timeout: t })
+    await last.click()
+    await last.waitFor({ state: 'hidden', timeout: t })
+    assert.ok((await dist()) < 60)
+
+    // fits at 1280 and 900 with the chat open
+    for (const size of [[1280, 800], [900, 600]]) {
+      await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].setSize(s[0], s[1]), size)
+      await page.waitForTimeout(500)
+      assert.deepEqual(await mainOverflow(page, true), [], `main content overflows with the chat open (${size[0]}px)`)
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.waitForTimeout(500)
+
+    // Terminal view: same pty size (the terminal was never display:none), keystrokes reach the pty; back to Chat keeps the content
+    await page.getByRole('button', { name: 'Terminal', exact: true }).click()
+    await chat.waitFor({ state: 'hidden', timeout: t })
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await term.locator('.xterm').click()
+    await page.keyboard.type('hola-marker')
+    await page.keyboard.press('Enter')
+    await poll(() => bytes().includes('hola-marker\r'), 'the typed marker reached the pty')
+    assert.equal(sizes().at(-1), colsChat, 'the pty size did not change with the view')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await chat.getByText('Crea una función suma y pruébala.').waitFor({ timeout: t })
+    await chat.getByText(/Conversación compactada/).waitFor({ timeout: t })
+    assert.equal(await term.locator('.xterm').isVisible(), false, 'the terminal is hidden again')
+
+    // light / dark shots (the OS theme drives relay-light / relay-dark)
+    for (const scheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme: scheme })
+      await page.waitForTimeout(600)
+      await ag.waitFor({ timeout: t })
+      await box.evaluate((el) => (el.scrollTop = 0))
+      await page.waitForTimeout(300)
+      await page.screenshot({ path: join(shots, `chat-${scheme}-top.png`) })
+      await page.getByRole('button', { name: 'Ir al último' }).click()
+      await page.waitForTimeout(300)
+      await page.screenshot({ path: join(shots, `chat-${scheme}.png`) })
+    }
+    await page.emulateMedia({ colorScheme: null })
+    assert.ok(!existsSync(join(d.home, '.claude')), 'nothing written outside the temp HOME')
+  } finally {
+    await app.close()
+  }
+}
+// ---- scenario 10: chat-first core (F6.3): hidden-but-live terminal, composer bridge bytes, Stop, clear confirmation, dialog/unknown fallback, fits, shots ----
+{
+  const d = setup('ten')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  const proj = join(d.home, 'chat-first')
+  mkdirSync(proj)
+  const cwd = realpathSync(proj)
+  const cfg = join(d.home, 'cfg-first')
+  mkdirSync(cfg)
+  writeFileSync(join(cfg, '.claude.json'), '{}')
+  mkdirSync(d.relayHome, { recursive: true })
+  writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([cwd]))
+  writeFileSync(join(d.relayHome, 'accounts.json'), JSON.stringify([{ id: 'dddddddd', label: 'Personal CarlosDev con una etiqueta de cuenta muy larga', provider: 'claude', configDir: cfg }]))
+  const klog = join(tmp, 'first-keys.log')
+  const ctl = join(tmp, 'first-ctl')
+  writeFileSync(ctl, '')
+  const app = await launch(d, { STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-'), STUB_THINK: '7000' })
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.getByTestId('account-card').first().waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    const chat = page.getByTestId('chat-pane')
+    const term = page.getByTestId('terminal-pane')
+    const composer = page.getByTestId('composer')
+    const send = page.getByRole('button', { name: 'Enviar', exact: true })
+    const lines = () => (existsSync(klog) ? readFileSync(klog, 'utf8').split('\n') : [])
+    const sizes = () => lines().filter((l) => l.startsWith('SIZE:')).map((l) => Number(l.split(' ')[1]))
+    const bytes = () => lines().filter((l) => l.startsWith('BYTES:')).map((l) => JSON.parse(l.slice(6))).join('')
+    const poll = async (fn, what) => {
+      for (let i = 0; i < 60; i++) {
+        if (await fn()) return
+        await new Promise((r) => setTimeout(r, 200))
+      }
+      assert.fail(`timeout: ${what}`)
+    }
+    const state = (s) => page.waitForFunction((x) => document.querySelector('[data-testid=activity]')?.dataset.state === x, s, { timeout: t })
+    const PS = '\x1b[200~'
+    const PE = '\x1b[201~'
+
+    // chat is the default view; the terminal is mounted, hidden, and the screen is classified from it
+    await composer.waitFor({ timeout: t })
+    await state('idle')
+    await page.getByTestId('activity').getByText('Listo', { exact: true }).waitFor({ timeout: t })
+    await term.locator('.xterm').waitFor({ state: 'attached', timeout: t })
+    assert.equal(await term.locator('.xterm').isVisible(), false, 'terminal hidden by default')
+    const [cb, tb] = await Promise.all([chat.boundingBox(), term.boundingBox()])
+    assert.ok(cb && tb && Math.abs(cb.width - tb.width) < 1 && Math.abs(cb.height - tb.height) < 1, 'hidden terminal keeps the size of the visible area (not display:none)')
+    await poll(() => sizes().length, 'the stub reported its pty size')
+    await page.waitForTimeout(600)
+    const cols0 = sizes().at(-1)
+    assert.ok(cols0 > 60, `pty is fitted to the area (${cols0} cols)`)
+    assert.equal(bytes(), '', 'nothing reached the pty before the user sent something')
+
+    // send: exactly paste-start + text + paste-end + CR; both messages appear in the chat
+    await composer.fill('hola')
+    await composer.press('Enter')
+    await chat.getByText('Respuesta a: hola').waitFor({ timeout: t })
+    assert.equal(bytes(), `${PS}hola${PE}\r`, 'one bracketed paste + Enter, nothing else')
+    await chat.locator('[data-testid=ev-message]', { hasText: /^hola$/ }).waitFor({ timeout: t })
+    await state('idle')
+    assert.equal(await composer.inputValue(), '', 'the composer is cleared after sending')
+
+    // multi-line (Shift+Enter) arrives intact
+    let m = bytes().length
+    await composer.fill('')
+    await composer.pressSequentially('linea1')
+    await composer.press('Shift+Enter')
+    await composer.pressSequentially('linea2')
+    await composer.press('Enter')
+    await poll(() => bytes().slice(m) === `${PS}linea1\nlinea2${PE}\r`, 'multi-line message arrived intact')
+    await chat.getByText('Respuesta a: linea1').waitFor({ timeout: t })
+    await state('idle')
+
+    // history: ArrowUp recalls the last sent message, ArrowDown returns to the draft
+    await composer.fill('')
+    await composer.press('ArrowUp')
+    assert.equal(await composer.inputValue(), 'linea1\nlinea2')
+    await composer.press('ArrowUp') // moves the caret to the first line of the recalled text; only then does it browse further
+    await composer.press('ArrowUp')
+    assert.equal(await composer.inputValue(), 'hola')
+    await composer.press('ArrowDown')
+    assert.equal(await composer.inputValue(), 'linea1\nlinea2')
+    await composer.press('ArrowDown') // caret to the last line
+    await composer.press('ArrowDown')
+    assert.equal(await composer.inputValue(), '')
+
+    // working: activity line with the pending tool from the transcript + Stop; screenshots in both themes
+    m = bytes().length
+    await composer.fill('trabaja un rato')
+    await composer.press('Enter')
+    await state('working')
+    await page.getByTestId('activity').getByText(/Trabajando… · Bash · bun test/).waitFor({ timeout: t })
+    const stopBtn = page.getByRole('button', { name: 'Parar', exact: true })
+    await stopBtn.waitFor({ timeout: t })
+    for (const scheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme: scheme })
+      await page.waitForTimeout(500)
+      await page.screenshot({ path: join(shots, `chat-first-${scheme}.png`) })
+    }
+    await page.emulateMedia({ colorScheme: null })
+    for (const size of [[1280, 800], [900, 600]]) {
+      await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].setSize(s[0], s[1]), size)
+      await page.waitForTimeout(500)
+      assert.deepEqual(await mainOverflow(page, true), [], `main content overflows in chat-first (${size[0]}px)`)
+      await sidebarFits(page, `chat-first ${size[0]}px`)
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.waitForTimeout(500)
+    // while the CLI works, sending is blocked (a permission dialog may appear any moment): typing is allowed, Enter writes nothing
+    assert.equal(await composer.isDisabled(), false, 'the draft can be typed while working')
+    await composer.fill('mas')
+    await composer.press('Enter')
+    await page.getByTestId('composer-hint').getByText(/Espera a que el CLI termine/).waitFor({ timeout: t })
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), `${PS}trabaja un rato${PE}\r`, 'nothing was sent while working')
+    assert.equal(await composer.inputValue(), 'mas', 'the blocked draft is kept')
+    await composer.fill('')
+    await stopBtn.click()
+    await poll(() => bytes().slice(m) === `${PS}trabaja un rato${PE}\r\x1b`, 'Stop wrote exactly one ESC')
+    await state('idle')
+
+    // hostile text: control bytes and a paste-end injection never reach the pty
+    m = bytes().length
+    await composer.fill('x\x03y\x1b[201~z\x04w')
+    assert.equal(await composer.inputValue(), 'x\x03y\x1b[201~z\x04w', 'the control characters really are in the textarea before sending')
+    await composer.press('Enter')
+    await poll(() => bytes().slice(m) === `${PS}xy[201~zw${PE}\r`, 'hostile text was stripped in main')
+    assert.ok(!/[\x03\x04\x1a]/.test(bytes()), 'no ^C / ^D / ^Z ever reached the pty')
+    await chat.getByText('Respuesta a: xy[201~zw').waitFor({ timeout: t }) // the turn this send started has finished (an idle frame from before the send must not count)
+    await state('idle')
+
+    // a non-empty CLI box (typed in the terminal): the composer asks before clearing; Cancel writes nothing
+    await page.getByRole('button', { name: 'Terminal', exact: true }).click()
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await term.locator('.xterm').click()
+    await page.keyboard.type('abc')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await state('input-pending')
+    await page.getByTestId('composer-hint').getByText(/no está vacía/).waitFor({ timeout: t })
+    m = bytes().length
+    await composer.fill('tras-limpiar')
+    await composer.press('Enter')
+    const dlg = page.getByRole('dialog', { name: 'Vaciar la entrada del CLI' })
+    await dlg.waitFor({ timeout: t })
+    assert.equal(await dlg.getByRole('button', { name: 'Cancelar' }).evaluate((el) => el === document.activeElement), true, 'the safe button has the focus')
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'nothing is written while the confirmation is open')
+    await dlg.getByRole('button', { name: 'Cancelar' }).click()
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'cancelling writes nothing')
+    await composer.press('Enter')
+    await dlg.waitFor({ timeout: t })
+    await dlg.getByRole('button', { name: 'Vaciar y enviar' }).click()
+    await poll(() => bytes().slice(m) === `\x15${PS}tras-limpiar${PE}\r`, 'confirmed: ^U then the message')
+    await state('working')
+    await state('idle')
+
+    // an open `/` list: ESC then ^U, only after confirming
+    await page.getByRole('button', { name: 'Terminal', exact: true }).click()
+    await term.locator('.xterm').click()
+    await page.keyboard.type('/')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await state('overlay')
+    m = bytes().length
+    await composer.fill('tras-lista')
+    await composer.press('Enter')
+    await dlg.waitFor({ timeout: t })
+    await page.waitForTimeout(200)
+    assert.equal(bytes().slice(m), '', 'nothing written before confirming')
+    await dlg.getByRole('button', { name: 'Vaciar y enviar' }).click()
+    await poll(() => bytes().slice(m) === `\x1b\x15${PS}tras-lista${PE}\r`, 'confirmed: ESC, ^U, then the message')
+    await state('working')
+    await state('idle')
+
+    // the frame changes around a send (the keydown handler stalls the renderer 500 ms while the stub draws a dialog): nothing reaches the pty (exercises the xterm flush + gate; the main-side seq guard is covered in tests/pty.test.ts)
+    m = bytes().length
+    await composer.fill('carrera')
+    await page.evaluate(() => document.querySelector('[data-testid=composer]').addEventListener('keydown', () => { const e = Date.now() + 500; while (Date.now() < e); }, { once: true, capture: true }))
+    setTimeout(() => writeFileSync(ctl, 'permission'), 80)
+    await composer.press('Enter')
+    await state('dialog:permission')
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'no byte is written when a dialog appears around the send')
+    assert.equal(await composer.inputValue(), 'carrera', 'the draft is kept')
+    // a permission dialog has a card (F6.4): the composer is blocked with the card hint, nothing is written without a click, the terminal does NOT open by itself
+    assert.equal(await composer.isDisabled(), true, 'composer blocked on a dialog')
+    assert.equal(await send.isDisabled(), true)
+    await page.getByTestId('activity').getByText('Esperando tu respuesta').waitFor({ timeout: t })
+    await page.getByTestId('composer-hint').getByText('Responde a la tarjeta o abre la terminal.').waitFor({ timeout: t })
+    await page.getByTestId('prompt-card').waitFor({ timeout: t })
+    await page.waitForTimeout(2200)
+    assert.equal(await chat.isVisible(), true, 'a card keeps the chat open (no terminal auto-open)')
+    assert.equal(await term.locator('.xterm').isVisible(), false)
+    assert.equal(bytes().slice(m), '', 'no key is sent without a click')
+    writeFileSync(ctl, '')
+    await state('idle')
+    assert.equal(await composer.isDisabled(), false)
+    await composer.fill('')
+
+    // a dialog without a card (folder trust) keeps the F6.3 behaviour: the terminal opens by itself (once), nothing is written
+    writeFileSync(ctl, 'trust')
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await page.getByRole('alert').filter({ hasText: 'espera una respuesta' }).waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await page.waitForTimeout(2200)
+    assert.equal(await chat.isVisible(), true, 'back in the chat the same dialog does not reopen the terminal')
+    await page.getByTestId('cli-notice').getByRole('button', { name: 'Abrir terminal' }).click()
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    assert.equal(bytes().slice(m), '', 'no key is sent for a dialog')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    writeFileSync(ctl, '')
+    await state('idle')
+    assert.equal(await composer.isDisabled(), false)
+    await composer.fill('')
+
+    // an unreadable screen opens the terminal by itself (after ~1.5 s) and says so
+    writeFileSync(ctl, 'unknown')
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await page.getByRole('alert').filter({ hasText: 'Relay no reconoce lo que muestra' }).waitFor({ timeout: t })
+    assert.equal(await chat.isVisible(), false, 'the chat view is replaced by the terminal')
+    assert.equal(bytes().slice(m), '', 'nothing written for an unknown screen')
+    writeFileSync(ctl, '')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await state('idle')
+
+    assert.equal(sizes().at(-1), cols0, 'the pty size never changed while switching views')
+    assert.ok(!existsSync(join(d.home, '.claude')), 'nothing written outside the temp HOME')
+  } finally {
+    await app.close()
+  }
+}
+// ---- scenario 11: prompt cards (F6.4): permission / question / multi-select / review / plan cards, exact keys, fingerprint guard, one shot, answered in the terminal, no-card dialogs, fits, shots ----
+{
+  const d = setup('eleven')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  const proj = join(d.home, 'cards')
+  mkdirSync(proj)
+  const cwd = realpathSync(proj)
+  const cfg = join(d.home, 'cfg-cards')
+  mkdirSync(cfg)
+  writeFileSync(join(cfg, '.claude.json'), '{}')
+  mkdirSync(d.relayHome, { recursive: true })
+  writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([cwd]))
+  writeFileSync(join(d.relayHome, 'accounts.json'), JSON.stringify([{ id: 'eeeeeeee', label: 'Personal CarlosDev con una etiqueta de cuenta muy larga', provider: 'claude', configDir: cfg }]))
+  const klog = join(tmp, 'cards-keys.log')
+  const ctl = join(tmp, 'cards-ctl')
+  writeFileSync(ctl, '')
+  const app = await launch(d, { STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-') })
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.getByTestId('account-card').first().waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    const chat = page.getByTestId('chat-pane')
+    const term = page.getByTestId('terminal-pane')
+    const composer = page.getByTestId('composer')
+    const card = page.getByTestId('prompt-card')
+    const btn = (n) => card.locator(`button[data-n="${n}"]`)
+    const lines = () => (existsSync(klog) ? readFileSync(klog, 'utf8').split('\n') : [])
+    const bytes = () => lines().filter((l) => l.startsWith('BYTES:')).map((l) => JSON.parse(l.slice(6))).join('')
+    const answers = () => lines().filter((l) => l.startsWith('ANSWER:'))
+    const poll = async (fn, what) => {
+      for (let i = 0; i < 60; i++) {
+        if (await fn()) return
+        await new Promise((r) => setTimeout(r, 200))
+      }
+      assert.fail(`timeout: ${what}`)
+    }
+    const state = (s) => page.waitForFunction((x) => document.querySelector('[data-testid=activity]')?.dataset.state === x, s, { timeout: t })
+    /** clears the dialog, waits for the idle screen, opens `name` and waits for its card */
+    const open = async (name, kind) => {
+      writeFileSync(ctl, '')
+      await state('idle')
+      await page.waitForTimeout(450) // the previous card's record settles
+      writeFileSync(ctl, name)
+      await page.locator('[data-testid=prompt-card][data-status=live]').waitFor({ timeout: t }) // armed: the fingerprint was stable for 400 ms
+      assert.equal(await card.getAttribute('data-kind'), kind)
+    }
+    const labels = async () => card.locator('button[data-n] > span:last-child').allInnerTexts()
+
+    await composer.waitFor({ timeout: t })
+    await state('idle')
+    assert.equal(bytes(), '', 'nothing reached the pty yet')
+
+    // ---- permission: body + options from the screen, nothing sent without a click ----
+    await open('permission', 'permission')
+    await card.getByText('touch created1.txt').waitFor({ timeout: t })
+    await card.getByText('Do you want to proceed?').waitFor({ timeout: t })
+    assert.deepEqual((await labels()).map((x) => x.split('\n')[0]), ['Yes', 'Yes, and always allow access to', 'Yes, and switch to auto mode · auto mode handles these prompts for you', 'No'])
+    await card.getByText('/tmp/proj from this project').waitFor({ timeout: t })
+    assert.equal(await composer.isDisabled(), true, 'the composer stays blocked while a card shows')
+    await page.getByTestId('composer-hint').getByText('Responde a la tarjeta o abre la terminal.').waitFor({ timeout: t })
+    await page.waitForTimeout(2200)
+    assert.equal(await term.locator('.xterm').isVisible(), false, 'the terminal does not open for a card')
+    assert.equal(bytes(), '', 'no key without a click')
+    for (const scheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme: scheme })
+      await page.waitForTimeout(500)
+      await page.screenshot({ path: join(shots, `card-permission-${scheme}.png`) })
+    }
+    await page.emulateMedia({ colorScheme: null })
+    // click 2: exactly "2"; the card disables and keeps a record; the fake TUI works a moment and returns to idle
+    let m = bytes().length
+    await btn(2).click()
+    await poll(() => bytes().slice(m) === '2', 'option 2 wrote exactly "2"')
+    assert.deepEqual(answers(), ['ANSWER:permission:2'])
+    await state('working')
+    await state('idle')
+    await page.getByTestId('prompt-card').filter({ hasText: 'Respondido' }).waitFor({ timeout: t })
+    assert.equal(await card.getAttribute('data-status'), 'sent')
+    assert.equal(await card.locator('button').count(), 0, 'the answered record has no buttons')
+    assert.equal(bytes().slice(m), '2', 'one key only')
+
+    // double click: one key
+    await open('permission', 'permission')
+    m = bytes().length
+    await btn(1).dblclick()
+    await poll(() => bytes().slice(m) === '1', 'option 1')
+    await page.waitForTimeout(600)
+    assert.equal(bytes().slice(m), '1', 'a double click sends once')
+    assert.equal(answers().filter((a) => a === 'ANSWER:permission:1').length, 1)
+
+    // Cancelar = exactly ESC
+    await open('permission', 'permission')
+    m = bytes().length
+    await card.getByRole('button', { name: 'Cancelar' }).click()
+    await poll(() => bytes().slice(m) === '\x1b', 'cancel wrote exactly ESC')
+    assert.equal(answers().at(-1), 'ANSWER:permission:cancel')
+
+    // keyboard: a digit on the focused card
+    await open('permission', 'permission')
+    m = bytes().length
+    await card.focus()
+    await page.keyboard.press('4')
+    await poll(() => bytes().slice(m) === '4', 'digit 4 on the focused card')
+    assert.equal(answers().at(-1), 'ANSWER:permission:4')
+
+    // ---- stale guard: the TUI swaps to ANOTHER permission dialog (another command) just before the click ----
+    await open('permission', 'permission')
+    await card.getByText('touch created1.txt').waitFor({ timeout: t })
+    m = bytes().length
+    const nAnswers = answers().length
+    // the click fires inside the pty:data handler of the swapped frame: xterm already holds it, the card still shows the old one (React renders ~200 ms later)
+    await page.evaluate(() => {
+      window.__swapped = false
+      let seen = ''
+      window.relay.pty.onData((_id, data) => {
+        if (window.__swapped) return
+        seen += data
+        // the whole swapped frame is in (its last row is the footer) and nothing more will come: xterm holds it, React (200 ms throttle) still shows the old card
+        if (!seen.includes('other-file.txt') || !seen.includes('Tab to amend')) return
+        window.__swapped = true
+        document.querySelector('[data-testid=prompt-card] button[data-n="2"]').click()
+      })
+    })
+    writeFileSync(ctl, 'permission2')
+    await page.waitForFunction(() => window.__swapped, null, { timeout: t })
+    await page.getByTestId('prompt-note').getByText(/La pantalla del CLI cambió/).waitFor({ timeout: t }) // the fingerprint compare dropped it
+    await card.getByText('other-file.txt').waitFor({ timeout: t })
+    await page.waitForTimeout(500)
+    assert.equal(bytes().slice(m), '', 'the fingerprint guard sent no byte')
+    assert.equal(answers().length, nAnswers, 'the fake TUI answered nothing')
+    assert.equal(await card.getAttribute('data-status'), 'live', 'the new dialog has its own fresh card')
+    assert.equal(await btn(2).isDisabled(), false)
+    await page.getByTestId('prompt-note').getByRole('button', { name: 'Abrir terminal' }).waitFor({ timeout: t })
+
+    // ---- answered in the terminal: the card turns into a record ----
+    await open('permission', 'permission')
+    m = bytes().length
+    await page.getByRole('button', { name: 'Terminal', exact: true }).click()
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    await term.locator('.xterm').click()
+    await page.keyboard.press('1')
+    await poll(() => bytes().slice(m) === '1', 'the terminal keystroke reached the pty')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+    await page.getByTestId('prompt-card').filter({ hasText: 'Respondido en la terminal' }).waitFor({ timeout: t })
+    assert.equal(await card.getAttribute('data-status'), 'terminal')
+    assert.equal(await card.locator('button').count(), 0)
+    assert.equal(bytes().slice(m), '1', 'Relay wrote nothing itself')
+
+    // ---- AskUserQuestion, single: descriptions from the transcript, "Type something" -> digit + text + Enter ----
+    await open('question', 'question')
+    await card.getByText('Rojo desde el transcript').waitFor({ timeout: t })
+    assert.deepEqual((await labels()).map((x) => x.split('\n')[0]), ['Red', 'Blue', 'Type something.', 'Chat about this'])
+    await page.screenshot({ path: join(shots, 'card-question-light.png') })
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await page.waitForTimeout(500)
+    await page.screenshot({ path: join(shots, 'card-question-dark.png') })
+    await page.emulateMedia({ colorScheme: null })
+    m = bytes().length
+    await btn(3).click()
+    assert.equal(bytes().slice(m), '', 'the digit of a text row waits for the text')
+    const box = card.getByTestId('prompt-text')
+    await box.fill('Verde\x1b[201~ claro')
+    await box.press('Enter')
+    await poll(() => bytes().slice(m) === '3Verde[201~ claro\r', 'digit, sanitized line, Enter')
+    assert.equal(answers().at(-1), 'ANSWER:question:text:Verde[201~ claro')
+    assert.deepEqual(lines().filter((l) => l.startsWith('BYTES:')).map((l) => JSON.parse(l.slice(6))).slice(-3), ['3', 'Verde[201~ claro', '\r'], 'three separate writes')
+
+    // ---- M3b: a new card cannot be answered while it settles (a MutationObserver clicks option 1 the moment a card first renders, and again 150 ms later) ----
+    await page.evaluate(() => {
+      const a = (window.__arm = { clicks: 0, late: [], seen: new WeakSet(), stop: () => ob.disconnect() })
+      const go = (c) => {
+        const click = () => (c.querySelector('button[data-n="1"]')?.click(), a.clicks++)
+        click()
+        setTimeout(() => (a.late.push(c.dataset.status), click()), 150)
+      }
+      const ob = new MutationObserver((recs) => {
+        for (const r of recs) {
+          const cs = r.type === 'attributes' ? [r.target] : [...r.addedNodes].flatMap((n) => (n.nodeType === 1 ? [...(n.matches('[data-testid=prompt-card]') ? [n] : []), ...n.querySelectorAll('[data-testid=prompt-card]')] : []))
+          for (const c of cs) if (c.dataset?.testid === 'prompt-card' && c.dataset.status === 'settling' && c.querySelector('button[data-n]')) go(c)
+        }
+      })
+      ob.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-status'] })
+    })
+    m = bytes().length
+    const nAns = answers().length
+    writeFileSync(ctl, '')
+    await state('idle')
+    await page.waitForTimeout(450)
+    writeFileSync(ctl, 'question')
+    await page.locator('[data-testid=prompt-card][data-status=live]').waitFor({ timeout: t })
+    await page.waitForTimeout(300) // the delayed click (150 ms after the card appeared) has run by now
+    const arm = await page.evaluate(() => (window.__arm.stop(), { clicks: window.__arm.clicks, late: window.__arm.late }))
+    assert.ok(arm.clicks >= 2 && arm.late.length >= 1, `the observer clicked the settling card (${JSON.stringify(arm)})`)
+    assert.ok(arm.late.every((x) => x === 'settling'), `still settling 150 ms after the card appeared (${arm.late})`)
+    assert.equal(bytes().slice(m), '', 'no byte while the card settled')
+    assert.equal(answers().length, nAns, 'no answer while the card settled')
+
+    // single option by digit
+    await open('question', 'question')
+    m = bytes().length
+    await btn(2).click()
+    await poll(() => bytes().slice(m) === '2', 'option 2 of the question')
+
+    // ---- M1: a CLI where the digit of "Type something" confirms: the line and Enter are never sent ----
+    await open('question3', 'question')
+    m = bytes().length
+    await btn(3).click()
+    await card.getByTestId('prompt-text').fill('Hola')
+    await card.getByTestId('prompt-text').press('Enter')
+    await poll(() => answers().at(-1) === 'ANSWER:question:3', 'the fake TUI took the digit as a confirmation')
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t }) // the failed check opens the terminal
+    await page.waitForTimeout(800)
+    assert.equal(bytes().slice(m), '3', 'only the digit: neither the line nor Enter reached the pty')
+    await page.getByRole('button', { name: 'Chat', exact: true }).click()
+
+    // ---- M2: a command taller than the screen: the card refuses to offer answers ----
+    writeFileSync(ctl, '')
+    await state('idle')
+    await page.waitForTimeout(450)
+    m = bytes().length
+    writeFileSync(ctl, 'longperm')
+    await page.getByTestId('prompt-refused').waitFor({ timeout: t })
+    assert.equal(await card.locator('button[data-n]').count(), 0, 'no option buttons for a dialog that does not fit')
+    await page.keyboard.press('1')
+    await page.waitForTimeout(300)
+    assert.equal(bytes().slice(m), '', 'nothing written')
+
+    // ---- multi-select + tabs + review ----
+    await open('multi', 'question')
+    assert.deepEqual((await labels()).map((x) => x.split('\n')[0]), ['Apple', 'Pear', 'Plum', 'Type something', 'Chat about this'])
+    m = bytes().length
+    await btn(1).click()
+    await poll(() => bytes().slice(m) === '1', 'toggle 1')
+    await btn(1).getByText('☑').waitFor({ timeout: t }) // re-armed with the new fingerprint
+    await btn(3).click()
+    await poll(() => bytes().slice(m) === '13', 'toggle 3')
+    await btn(3).getByText('☑').waitFor({ timeout: t })
+    assert.equal(await btn(2).getByText('☐').count(), 1)
+    await card.getByRole('button', { name: 'Siguiente' }).click()
+    await poll(() => bytes().slice(m) === '13\t', 'Next = Tab')
+    await card.getByText('Which size do you want?').waitFor({ timeout: t })
+    // double click on question 1 of a two-question single-select flow: exactly one digit (the 2nd click lands on the locked card, or on the unarmed review card; arming itself is tested below)
+    await btn(2).dblclick()
+    await poll(() => bytes().slice(m) === '13\t2', 'single-select digit on the second tab')
+    await page.waitForTimeout(700)
+    assert.equal(bytes().slice(m), '13\t2', 'the second click of a double click reached nothing')
+    await card.getByText('Review your answers').first().waitFor({ timeout: t })
+    assert.equal(await card.getAttribute('data-kind'), 'review')
+    assert.deepEqual((await labels()).map((x) => x.split('\n')[0]), ['Submit answers', 'Cancel'])
+    await btn(1).click()
+    await poll(() => bytes().slice(m) === '13\t21', 'review: 1 submits')
+    assert.deepEqual(answers().slice(-5), ['ANSWER:multi:toggle:1', 'ANSWER:multi:toggle:3', 'ANSWER:multi:next', 'ANSWER:multi:size:2', 'ANSWER:multi:review:1'])
+
+    // ---- plan: markdown from the transcript, option 3 -> text ----
+    await open('plan', 'plan')
+    await card.getByRole('heading', { name: 'Plan de prueba' }).waitFor({ timeout: t })
+    assert.deepEqual((await labels()).map((x) => x.split('\n')[0]), ['Yes, and use auto mode', 'Yes, manually approve edits', 'Tell Claude what to change'])
+    for (const size of [[1280, 800], [900, 600]]) {
+      await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].setSize(s[0], s[1]), size)
+      await page.waitForTimeout(500)
+      assert.deepEqual(await mainOverflow(page, true), [], `main content overflows with a plan card (${size[0]}px)`)
+      await sidebarFits(page, `plan card ${size[0]}px`)
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800))
+    await page.waitForTimeout(500)
+    m = bytes().length
+    await btn(3).click()
+    await card.getByTestId('prompt-text').fill('Añade tests')
+    await card.getByRole('button', { name: 'Enviar', exact: true }).click()
+    await poll(() => bytes().slice(m) === '3Añade tests\r', 'plan feedback: digit, text, Enter')
+    assert.equal(answers().at(-1), 'ANSWER:plan:text:Añade tests')
+    await open('plan', 'plan')
+    m = bytes().length
+    await btn(1).click()
+    await poll(() => bytes().slice(m) === '1', 'plan option 1')
+
+    // ---- dialogs without a card keep the F6.3 behaviour ----
+    for (const [name, what] of [['odd', 'dialog:unknown'], ['trust', 'dialog:trust']]) {
+      writeFileSync(ctl, '')
+      await state('idle')
+      await page.waitForTimeout(450)
+      m = bytes().length
+      writeFileSync(ctl, name)
+      await state(what)
+      await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+      await page.getByRole('alert').filter({ hasText: 'espera una respuesta' }).last().waitFor({ timeout: t }) // toasts of the previous round may still be up
+      assert.equal(await chat.isVisible(), false, `${what}: the terminal opened by itself`)
+      assert.equal(bytes().slice(m), '', `${what}: nothing written`)
+      await page.getByRole('button', { name: 'Chat', exact: true }).click()
+      assert.equal(await card.filter({ has: page.locator('[data-n]') }).count(), 0, `${what}: no card`)
+    }
+    writeFileSync(ctl, '')
+    await state('idle')
+    assert.ok(!existsSync(join(d.home, '.claude')), 'nothing written outside the temp HOME')
+  } finally {
+    await app.close()
+  }
+}
 // ---- scenario 7: only Codex installed -> the onboarding account dialog defaults to Codex ----
 {
   const d = setup('seven')

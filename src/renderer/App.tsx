@@ -6,6 +6,7 @@ import { Onboarding } from './Onboarding'
 import { Settings } from './Settings'
 import { Sidebar } from './Sidebar'
 import { NAMES, guessProvider, missingMsg, suggestLabel } from './status'
+import { ChatPane } from './Chat'
 import { TerminalPane } from './Terminal'
 import { Dialog, Dot, Dropdown, IconChevron, IconFolder, ToastStack, ago, useModal, useToasts } from './ui'
 
@@ -23,6 +24,8 @@ interface Tab {
   hint?: string
   /** session id changed inside the CLI and could not be tied to this tab: no handoff */
   stale?: boolean
+  /** F6.3 session area of a Claude tab: the chat is the default; the CLI's terminal stays alive (hidden) underneath */
+  view?: 'chat' | 'terminal'
 }
 const STALE = 'Sesión cambiada dentro del CLI; vuelve a abrirla desde el sidebar para poder continuarla en otra cuenta'
 const base = (p: string) => p.split('/').filter(Boolean).pop() ?? p
@@ -381,6 +384,9 @@ export function App() {
 
   const targets = tab ? accounts.filter((a) => a.id !== tab.accountId && a.provider === accounts.find((x) => x.id === tab.accountId)?.provider) : []
   const canHand = !!tab?.sessionId && !tab.stale
+  const hasChat = (t: Tab) => !!t.accountId && !!t.sessionId && !t.login && !t.install && provOf(t.accountId) === 'claude' // Codex: terminal only until F6.6
+  const chatOf = (t: Tab) => hasChat(t) && (t.view ?? 'chat') === 'chat'
+  const setTabView = (ptyId: number, view: 'chat' | 'terminal') => setTabs((ts) => ts.map((x) => (x.ptyId === ptyId ? { ...x, view } : x)))
   const tabStatus = (t: Tab) => {
     const lim = statuses[t.accountId]?.limited
     return t.exited ? { c: 'badge-ghost', l: 'finalizada', tone: 'off' as const } : t.stale ? { c: 'badge-warning', l: 'sesión cambiada', tone: 'warn' as const } : lim ? { c: 'badge-warning', l: 'cuenta limitada', tone: 'warn' as const } : { c: 'badge-success', l: t.login ? 'inicio de sesión' : t.install ? 'instalador' : 'activa', tone: 'ok' as const }
@@ -453,6 +459,13 @@ export function App() {
             <span className="badge badge-soft badge-primary badge-sm max-w-40 shrink" title={accLabel(tab.accountId)}><span className="truncate">{accLabel(tab.accountId)}</span></span>
             <span className={`badge badge-soft badge-sm shrink-0 gap-1 ${tabStatus(tab).c}`}><Dot tone={tabStatus(tab).tone} />{tabStatus(tab).l}</span>
             <span className="flex-1" />
+            {hasChat(tab) && (
+              <div className="join" role="group" aria-label="Vista de la sesión">
+                {([['chat', 'Chat'], ['terminal', 'Terminal']] as const).map(([m, l]) => (
+                  <button key={m} className={`btn btn-xs join-item ${(tab.view ?? 'chat') === m ? 'btn-active' : ''}`} aria-pressed={(tab.view ?? 'chat') === m} onClick={() => setTabView(tab.ptyId, m)}>{l}</button>
+                ))}
+              </div>
+            )}
             <button className="btn btn-ghost btn-xs" onClick={() => void closeTab(tab)} title="Cierra la pestaña y detiene su proceso">Cerrar pestaña</button>
           </div>
         )}
@@ -485,7 +498,26 @@ export function App() {
                 </div>
               </div>
             ) : (
-              <TerminalPane key={t.ptyId} ptyId={t.ptyId} visible={t.ptyId === cur} />
+              <div key={t.ptyId} className={`relative h-full ${t.ptyId === cur ? '' : 'hidden'}`}>
+                <div className="absolute inset-0" data-testid="terminal-pane">
+                  <TerminalPane ptyId={t.ptyId} visible={t.ptyId === cur && !chatOf(t)} keep />
+                </div>
+                {hasChat(t) && (
+                  <div className={`absolute inset-0 z-10 bg-base-100 ${chatOf(t) ? '' : 'invisible'}`} data-testid="chat-pane">
+                    <ChatPane
+                      ptyId={t.ptyId}
+                      r={{ accountId: t.accountId, cwd: t.cwd, sessionId: t.sessionId! }}
+                      account={accLabel(t.accountId)}
+                      exited={!!t.exited}
+                      active={t.ptyId === cur}
+                      showing={chatOf(t)}
+                      modal={modal}
+                      onError={setError}
+                      onTerminal={(auto) => (setTabView(t.ptyId, 'terminal'), auto && toasts.push('info', auto))}
+                    />
+                  </div>
+                )}
+              </div>
             )
           )}
           {!tab && (

@@ -1,0 +1,38 @@
+
+
+  Read 1 file
+
+⏺ Update(notes.txt)
+  ⎿  User rejected update to notes.txt
+      1 -dummy
+      1 +changed
+
+✻ Crunched for 4s · done 9:43 AM
+
+❯ Use the AskUserQuestion tool to ask me which color I prefer, with two options: Red and Blue. Nothing else.
+
+⏺ User answered Claude's questions:
+  ⎿  · Which color do you prefer? → Green
+
+⏺ You picked Green, which wasn't one of the two options I offered. I haven't saved a preference anywhere. Do you want me
+  to note Green somewhere, or is it just a one-off answer?
+
+✻ Crunched for 3s · done 9:43 AM
+
+❯ Use AskUserQuestion once with TWO questions: (1) multiSelect true, header Fruits, options Apple/Pear/Plum; (2)
+  single-select header Size, options Big/Small. Nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Fruits  ☐ Size  ✔ Submit  →
+
+Which size do you want?
+
+❯ 1. Big
+     Big
+  2. Small
+     Small
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+--cursor y=28 x=0 bracketedPaste=true exited=null

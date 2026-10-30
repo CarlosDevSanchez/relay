@@ -31,6 +31,9 @@ interface Tab {
 const STALE = 'Sesión cambiada dentro del CLI; vuelve a abrirla desde el sidebar para poder continuarla en otra cuenta'
 const base = (p: string) => p.split('/').filter(Boolean).pop() ?? p
 
+/** raw kind (text word or quotaLimits.rateLimitType) -> Spanish label; unknown = none */
+const limitKind = (k: string) => (/^(session|five_hour)$/.test(k) ? 'de sesión' : /^(weekly|seven_day)/.test(k) ? 'semanal' : '')
+
 export function App() {
   const modal = useModal()
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -60,6 +63,9 @@ export function App() {
   const provOf = (id: string) => accounts.find((a) => a.id === id)?.provider
   const hit = hits[0]
   const hitTab = hit && tabs.find((x) => x.ptyId === hit.ptyId)
+  const hitAt = useRef(0)
+  useEffect(() => void (hitAt.current = Date.now()), [hit?.ptyId])
+  const hitArming = () => Date.now() - hitAt.current < 1000 // a stray key typed in the terminal must not close the limit modal the moment it appears
   const dropHit = (ptyId?: number) => {
     setModalError('')
     setHits((hs) => (ptyId === undefined ? hs.slice(1) : hs.filter((h) => h.ptyId !== ptyId)))
@@ -99,6 +105,8 @@ export function App() {
 
   const [upd, setUpd] = useState<Parameters<typeof UpdateDialog>[0]['r'] | null>(null)
   useEffect(() => window.relay.updates.onAvailable(setUpd), [])
+  const [chatOn, setChatOn] = useState(false) // chat hidden pending a fix phase: terminal-first
+  useEffect(() => void window.relay.chatEnabled().then(setChatOn), [])
 
   const loadWarnAt = useCallback(() => void window.relay.prefs.get().then((x) => setWarnAt(x.usage.warnAt)), [])
   useEffect(loadWarnAt, [loadWarnAt])
@@ -388,8 +396,8 @@ export function App() {
 
   const targets = tab ? accounts.filter((a) => a.id !== tab.accountId && a.provider === accounts.find((x) => x.id === tab.accountId)?.provider) : []
   const canHand = !!tab?.sessionId && !tab.stale
-  const hasChat = (t: Tab) => !!t.accountId && !!t.sessionId && !t.login && !t.install && provOf(t.accountId) === 'claude' // Codex: terminal only until F6.6
-  const chatOf = (t: Tab) => hasChat(t) && (t.view ?? 'chat') === 'chat'
+  const hasChat = (t: Tab) => chatOn && !!t.accountId && !!t.sessionId && !t.login && !t.install && provOf(t.accountId) === 'claude' // Codex: terminal only until F6.6
+  const chatOf = (t: Tab) => hasChat(t) && (t.view ?? 'chat') === 'chat' // default view is chat only when chatOn
   const setTabView = (ptyId: number, view: 'chat' | 'terminal') => setTabs((ts) => ts.map((x) => (x.ptyId === ptyId ? { ...x, view } : x)))
   const tabStatus = (t: Tab) => {
     const lim = statuses[t.accountId]?.limited
@@ -585,8 +593,8 @@ export function App() {
         />
       )}
       {hit && (
-        <Dialog key={hit.ptyId} label="Límite alcanzado" onClose={() => dropHit()} boxClass="max-w-md">
-          <h3 className="text-base font-semibold">{hitAcc?.label} llegó a su límite ({hit.kind})</h3>
+        <Dialog key={hit.ptyId} label="Límite alcanzado" onClose={() => dropHit()} boxClass="max-w-md" guard={hitArming}>
+          <h3 className="text-base font-semibold">{hitAcc?.label} llegó a su límite{limitKind(hit.kind) && ` (${limitKind(hit.kind)})`}</h3>
           <p className="mt-1 text-sm opacity-70">Se reinicia {hit.resetText}. Relay no cambia de cuenta por sí solo.</p>
           <p className="mt-2 truncate text-xs opacity-60">Sesión: {hitTab?.title ?? '(pestaña cerrada)'}</p>
           {hitTab?.stale && <div role="alert" className="alert alert-error alert-soft mt-2 text-xs">{STALE}</div>}
@@ -625,7 +633,7 @@ export function App() {
           {hits.length > 1 && <p className="mt-2 text-xs opacity-60">{hits.length - 1} aviso(s) más en cola.</p>}
           <div className="modal-action">
             <button className="btn btn-ghost" disabled={!hit.resetAt} title={hit.resetAt ? '' : 'No se pudo leer la hora de reinicio; no hay recordatorio posible'} onClick={wait}>Esperar al reinicio</button>
-            <button className="btn" data-autofocus onClick={() => dropHit()}>Cerrar</button>
+            <button className="btn" data-autofocus onClick={() => !hitArming() && dropHit()}>Cerrar</button>
           </div>
         </Dialog>
       )}

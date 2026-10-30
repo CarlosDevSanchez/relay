@@ -77,7 +77,8 @@ const setOpenDialogs = (f: (l: HTMLDialogElement[]) => HTMLDialogElement[]) => (
 const topDialog = () => openDialogs.at(-1) ?? null
 const subscribeDialogs = (cb: () => void) => (dialogSubs.add(cb), () => void dialogSubs.delete(cb))
 
-export function Dialog({ label, onClose, children, boxClass = '' }: { label: string; onClose(): void; children: ReactNode; boxClass?: string }) {
+/** `guard()` true = Escape is ignored (a dialog that appears on its own must not be closed by a stray key) */
+export function Dialog({ label, onClose, children, boxClass = '', guard }: { label: string; onClose(): void; children: ReactNode; boxClass?: string; guard?: () => boolean }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     const d = ref.current
@@ -91,7 +92,7 @@ export function Dialog({ label, onClose, children, boxClass = '' }: { label: str
     return () => setOpenDialogs((l) => l.filter((x) => x !== d))
   }, [])
   return (
-    <dialog ref={ref} aria-label={label} className="modal" onClose={onClose}>
+    <dialog ref={ref} aria-label={label} className="modal" onClose={onClose} onCancel={(e) => guard?.() && e.preventDefault()} onKeyDown={(e) => e.key === 'Escape' && guard?.() && e.preventDefault()}>
       <div className={`modal-box ${boxClass}`}>{children}</div>
       <form method="dialog" className="modal-backdrop">
         <button tabIndex={-1} aria-label="Cerrar">cerrar</button>

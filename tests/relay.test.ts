@@ -288,7 +288,13 @@ describe('usage', () => {
     expect((await scanUsage(w, NOW)).limited?.kind).toBe('weekly')
     const s = tmp()
     put(s, 'a.jsonl', lim('2026-10-08T00:00:00Z')) // reset time already passed: expired
-    expect((await scanUsage(s, NOW)).limited).toBeUndefined()
+    // the account scan shares the modal's gate: a transient 429 tagged rate_limit does not limit the account, a rejected quotaLimits does
+    const t = tmp()
+    put(t, 'a.jsonl', line({ type: 'assistant', timestamp: '2026-10-09T04:17:00Z', isApiErrorMessage: true, error: 'rate_limit', message: { content: [{ type: 'text', text: 'API Error: Rate limit reached' }] } }))
+    expect((await scanUsage(t, NOW)).limited).toBeUndefined()
+    const q = tmp()
+    put(q, 'a.jsonl', line({ type: 'assistant', timestamp: '2026-10-09T04:17:00Z', isApiErrorMessage: true, error: 'rate_limit', quotaLimits: { status: 'rejected', resetsAt: NOW / 1000 + 3600, rateLimitType: 'five_hour' }, message: { content: [{ type: 'text', text: 'otro idioma' }] } }))
+    expect((await scanUsage(q, NOW)).limited).toMatchObject({ kind: 'five_hour', resetAt: NOW + 3600_000 })
   })
 })
 
@@ -403,12 +409,29 @@ describe('reset parsing', () => {
   })
   it('parses limit text and lines', () => {
     expect(parseLimitText("You've hit your weekly limit · resets Oct 12, 3pm (UTC)", ref)).toEqual({ kind: 'weekly', resetText: 'Oct 12, 3pm (UTC)', resetAt: Date.parse('2026-10-12T15:00:00Z') })
+    // newer CLI wording without the window word
+    expect(parseLimitText("You've hit your limit · resets 3pm (UTC)", ref)).toMatchObject({ kind: '', resetText: '3pm (UTC)' })
     expect(parseLimitText('hello', ref)).toBeNull()
     const ok = JSON.stringify({ type: 'assistant', timestamp: '2026-10-09T04:17:00Z', isApiErrorMessage: true, error: 'rate_limit', message: { content: [{ text: "You've hit your session limit · resets 1:10am (America/Bogota)" }] } })
     expect(parseLimitLine(ok)).toMatchObject({ kind: 'session', ts: ref, resetAt: Date.parse('2026-10-09T06:10:00Z') })
     expect(parseLimitLine(ok.replace('"rate_limit"', '"other_rate_limit"'))).toBeNull()
     expect(parseLimitLine('{"rate_limit"')).toBeNull()
-    expect(parseLimitLine(JSON.stringify({ type: 'assistant', timestamp: 'x', error: 'rate_limit' }))).toBeNull()
+    // the gate (assistant + isApiErrorMessage + rate_limit) is enough: wording in another language still produces a hit
+    const gate = (extra: object, text: string) => JSON.stringify({ type: 'assistant', timestamp: '2026-10-09T04:17:00Z', isApiErrorMessage: true, error: 'rate_limit', message: { content: [{ text }] }, ...extra })
+    const q = { status: 'rejected', resetsAt: 1791000000, rateLimitType: 'five_hour' }
+    const when = (ms: number) => new Date(ms).toLocaleString('es', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+    // quotaLimits rejected, text in another language: exact reset, text built from it (never the raw message)
+    expect(parseLimitLine(gate({ quotaLimits: q }, 'Has alcanzado tu límite · se reinicia a la 1:10'))).toMatchObject({ kind: 'five_hour', resetAt: 1791000000_000, resetText: when(1791000000_000) })
+    expect(parseLimitLine(gate({ quotaLimits: q }, "You've hit your weekly limit · resets Oct 12, 3pm (UTC)"))).toMatchObject({ kind: 'weekly', resetAt: 1791000000_000, resetText: 'Oct 12, 3pm (UTC)' })
+    // window word missing in the text, type from quotaLimits
+    expect(parseLimitLine(gate({ quotaLimits: q }, "You've hit your limit · resets 3pm (UTC)"))).toMatchObject({ kind: 'five_hour', resetText: '3pm (UTC)' })
+    // a transient 429 tagged rate_limit is not an account limit: no text match and no rejected quota
+    expect(parseLimitLine(gate({}, 'API Error: Rate limit reached'))).toBeNull()
+    expect(parseLimitLine(gate({}, ''))).toBeNull()
+    expect(parseLimitLine(gate({ quotaLimits: { ...q, status: 'allowed' } }, 'algo raro'))).toBeNull()
+    expect(parseLimitLine(gate({ quotaLimits: { status: 'rejected', resetsAt: 'x', rateLimitType: 7 } }, 'algo raro'))).toBeNull()
+    // text matches but quotaLimits is garbage: the text wins
+    expect(parseLimitLine(gate({ quotaLimits: { status: 'rejected', resetsAt: -1 } }, "You've hit your session limit · resets 1:10am (UTC)"))).toMatchObject({ kind: 'session', resetText: '1:10am (UTC)' })
   })
   it('scheduleAt fires once at the time, can be cancelled, ignores the past', () => {
     vi.useFakeTimers()

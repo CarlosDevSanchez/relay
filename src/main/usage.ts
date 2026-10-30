@@ -5,7 +5,7 @@ import { promisify } from 'node:util'
 import type { Account, AccountStatus } from '../shared/types'
 import { scanCodexLimit } from './codex'
 import { buildEnv } from './env'
-import { parseLimitText } from './limit'
+import { parseLimitLine } from './limit'
 import type { CopyRecord } from './store'
 import { isSessionId } from './validate'
 import { providers } from './providers'
@@ -85,8 +85,8 @@ async function parseFile(f: { path: string; size: number; mtimeMs: number }): Pr
     const ts = Date.parse(d?.timestamp)
     if (d?.type !== 'assistant' || Number.isNaN(ts)) continue
     if (d.isApiErrorMessage) {
-      const m = d.error === 'rate_limit' ? parseLimitText(String(d.message?.content?.[0]?.text ?? ''), ts) : null
-      if (m) part.limits.push({ ts, off: at, ...m })
+      const m = parseLimitLine(l) // same gate as the limit modal
+      if (m) part.limits.push({ ts, off: at, kind: m.kind, resetText: m.resetText, resetAt: m.resetAt })
       continue
     }
     const u = d.message?.usage ?? {}

@@ -300,8 +300,13 @@ if (!APP) {
       isApiErrorMessage: true, error: 'rate_limit', apiErrorStatus: 429, message: { model: '<synthetic>', content: [{ type: 'text', text: "You've hit your session limit · resets 1:10am (UTC)" }] } }) + '\n')
     const limit = page.getByRole('dialog', { name: 'Límite alcanzado' })
     await limit.waitFor({ timeout: t })
+    await page.keyboard.press('Enter') // a stray key while typing in the terminal, inside the 1 s arming window: ignored (pressed first: a loaded machine must not miss the window)
+    await page.keyboard.press('Escape')
     assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Cerrar', 'the limit modal opens on its safe button')
-    await page.keyboard.press('Enter') // a stray key while typing in the terminal
+    await page.waitForTimeout(300)
+    assert.ok(await limit.isVisible(), 'a stray Enter/Escape right after the modal opens does not close it')
+    await page.waitForTimeout(1000) // armed now
+    await page.keyboard.press('Enter') // explicit close on the focused safe button
     await limit.waitFor({ state: 'hidden', timeout: t })
     await page.waitForTimeout(1000)
     assert.ok(!calls().some((c) => c.includes('--resume')), 'a stray Enter must not start a handoff')
@@ -785,7 +790,7 @@ if (!APP) {
 }
 
 // ---- scenario 9: conversation view (F6.2): a scripted transcript is written live by the stub; cards, diffs, inert markdown, chat-first layout, Chat/Terminal toggle, scrolling, fits, light/dark shots ----
-{
+if (!APP) {
   const d = setup('nine')
   copyFileSync(stub, join(d.bin, 'claude'))
   const proj = join(d.home, 'chat-app')
@@ -840,7 +845,7 @@ if (!APP) {
   const lines = (a) => a.map((x) => JSON.stringify(x)).join('\n') + '\n'
   writeFileSync(join(tmp, 'chat-script.jsonl'), lines(script))
   writeFileSync(join(tmp, 'chat-agent.jsonl'), lines(sub))
-  const app = await launch(d, { STUB_SCRIPT: join(tmp, 'chat-script.jsonl'), STUB_AGENT: join(tmp, 'chat-agent.jsonl'), STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-'), STUB_GAP: '0.3', STUB_KEYS: join(tmp, 'chat-keys.log') })
+  const app = await launch(d, { RELAY_E2E_CHAT: '1', STUB_SCRIPT: join(tmp, 'chat-script.jsonl'), STUB_AGENT: join(tmp, 'chat-agent.jsonl'), STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-'), STUB_GAP: '0.3', STUB_KEYS: join(tmp, 'chat-keys.log') })
   try {
     const page = await app.firstWindow()
     page.on('pageerror', (e) => console.error('pageerror', e.message))
@@ -974,7 +979,7 @@ if (!APP) {
   }
 }
 // ---- scenario 10: chat-first core (F6.3): hidden-but-live terminal, composer bridge bytes, Stop, clear confirmation, dialog/unknown fallback, fits, shots ----
-{
+if (!APP) {
   const d = setup('ten')
   copyFileSync(stub, join(d.bin, 'claude'))
   const proj = join(d.home, 'chat-first')
@@ -989,7 +994,7 @@ if (!APP) {
   const klog = join(tmp, 'first-keys.log')
   const ctl = join(tmp, 'first-ctl')
   writeFileSync(ctl, '')
-  const app = await launch(d, { STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-'), STUB_THINK: '7000' })
+  const app = await launch(d, { RELAY_E2E_CHAT: '1', STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-'), STUB_THINK: '7000' })
   try {
     const page = await app.firstWindow()
     page.on('pageerror', (e) => console.error('pageerror', e.message))
@@ -1207,7 +1212,7 @@ if (!APP) {
   }
 }
 // ---- scenario 11: prompt cards (F6.4): permission / question / multi-select / review / plan cards, exact keys, fingerprint guard, one shot, answered in the terminal, no-card dialogs, fits, shots ----
-{
+if (!APP) {
   const d = setup('eleven')
   copyFileSync(stub, join(d.bin, 'claude'))
   const proj = join(d.home, 'cards')
@@ -1222,7 +1227,7 @@ if (!APP) {
   const klog = join(tmp, 'cards-keys.log')
   const ctl = join(tmp, 'cards-ctl')
   writeFileSync(ctl, '')
-  const app = await launch(d, { STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-') })
+  const app = await launch(d, { RELAY_E2E_CHAT: '1', STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: cwd.replace(/[^a-zA-Z0-9]/g, '-') })
   try {
     const page = await app.firstWindow()
     page.on('pageerror', (e) => console.error('pageerror', e.message))
@@ -1507,7 +1512,7 @@ if (!APP) {
   }
 }
 // ---- scenario 12: controls bar and palettes (F6.5): `/` palette, `@` autocomplete, "+" menu, mode cycle (Shift+Tab), model warning, context ring, compact / clear, nothing while busy, fits, shots ----
-{
+if (!APP) {
   const d = setup('twelve')
   copyFileSync(stub, join(d.bin, 'claude'))
   const proj = join(d.home, 'controls-app')
@@ -1533,7 +1538,7 @@ if (!APP) {
   const ctl = join(tmp, 'controls-ctl')
   writeFileSync(ctl, '')
   const enc = cwd.replace(/[^a-zA-Z0-9]/g, '-')
-  const app = await launch(d, { STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: enc, STUB_THINK: '2500' })
+  const app = await launch(d, { RELAY_E2E_CHAT: '1', STUB_KEYS: klog, STUB_CTL: ctl, STUB_ENC: enc, STUB_THINK: '2500' })
   try {
     const page = await app.firstWindow()
     page.on('pageerror', (e) => console.error('pageerror', e.message))
@@ -1994,6 +1999,32 @@ if (!APP) {
     }
   } finally {
     srv.close()
+  }
+}
+// ---- scenario 13: chat mode hidden by default (default, RELAY_E2E_CHAT unset): a Claude tab shows the terminal, no Chat toggle, no chat pane ----
+{
+  const d = setup('thirteen')
+  copyFileSync(stub, join(d.bin, 'claude'))
+  const proj = join(d.home, 'term-app')
+  mkdirSync(proj)
+  const cfg = join(d.home, 'cfg-term')
+  mkdirSync(cfg)
+  writeFileSync(join(cfg, '.claude.json'), '{}')
+  mkdirSync(d.relayHome, { recursive: true })
+  writeFileSync(join(d.relayHome, 'projects.json'), JSON.stringify([realpathSync(proj)]))
+  writeFileSync(join(d.relayHome, 'accounts.json'), JSON.stringify([{ id: 'dddddddd', label: 'Terminal', provider: 'claude', configDir: cfg }]))
+  const app = await launch(d)
+  try {
+    const page = await app.firstWindow()
+    page.on('pageerror', (e) => console.error('pageerror', e.message))
+    await page.getByTestId('account-card').first().waitFor({ timeout: t })
+    await page.getByRole('button', { name: 'Nueva sesión' }).first().click()
+    const term = page.getByTestId('terminal-pane')
+    await term.locator('.xterm').waitFor({ state: 'visible', timeout: t })
+    assert.equal(await page.getByRole('button', { name: 'Chat', exact: true }).count(), 0, 'no Chat toggle')
+    assert.equal(await page.getByTestId('chat-pane').count(), 0, 'chat pane not mounted')
+  } finally {
+    await app.close()
   }
 }
 console.log('e2e OK; screenshots in', shots)

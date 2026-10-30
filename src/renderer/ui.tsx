@@ -12,10 +12,13 @@ const Svg = ({ d, size = 14 }: { d: string; size?: number }) => (
 )
 export const IconPlus = () => <Svg d="M8 3v10M3 8h10" />
 export const IconChevron = ({ open }: { open?: boolean }) => <Svg d={open ? 'M4 6l4 4 4-4' : 'M6 4l4 4-4 4'} size={12} />
+export const IconChevronUp = () => <Svg d="M4 10l4-4 4 4" size={12} />
 export const IconKebab = () => <Svg d="M8 3.5v.01M8 8v.01M8 12.5v.01" size={16} />
 export const IconGear = () => <Svg d="M8 10a2 2 0 100-4 2 2 0 000 4zM8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
 export const IconLink = () => <Svg d="M6.5 9.5l3-3M7 4.5l1-1a2.5 2.5 0 013.5 3.5l-1 1M9 11.5l-1 1A2.5 2.5 0 014.5 9l1-1" size={12} />
 export const IconFolder = () => <Svg d="M2 4.5A1.5 1.5 0 013.5 3H6l1.5 1.5h5A1.5 1.5 0 0114 6v5.5a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 11.5z" />
+export const IconSend = () => <Svg size={18} d="M3 8h9M8.5 4l4 4-4 4" />
+export const IconStop = () => <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="2" /></svg>
 
 // ---- logo: relay-mark.svg inlined so it follows `currentColor` (brand teal via text-primary); `full` = relay-logo.svg with the wordmark (fixed teal, on a navy chip so it reads in the light theme) ----
 export const Logo = ({ size = 20, full = false }: { size?: number; full?: boolean }) => (
@@ -34,10 +37,12 @@ export interface MenuItem {
   disabled?: boolean
   title?: string
   danger?: boolean
+  /** the current choice of a selector */
+  active?: boolean
 }
-export function Dropdown({ trigger, items, title, align = 'right', btnClass = 'btn btn-sm btn-ghost', tip = 'tooltip-bottom', menuClass = 'w-60' }: { trigger: ReactNode; items: MenuItem[]; title?: string; align?: 'left' | 'right'; btnClass?: string; tip?: string | null; menuClass?: string }) {
+export function Dropdown({ trigger, items, title, align = 'right', btnClass = 'btn btn-sm btn-ghost', tip = 'tooltip-bottom', menuClass = 'w-60', up = false }: { trigger: ReactNode; items: MenuItem[]; title?: string; align?: 'left' | 'right'; btnClass?: string; tip?: string | null; menuClass?: string; /** opens upwards (controls under the composer) */ up?: boolean }) {
   return (
-    <div className={`dropdown nodrag ${align === 'right' ? 'dropdown-end' : ''}`}>
+    <div className={`dropdown nodrag ${align === 'right' ? 'dropdown-end' : ''} ${up ? 'dropdown-top' : ''}`}>
       {/* tip = null: native title only (a CSS tooltip is laid out wide even while invisible, which widens its scroll container) */}
       {tip === null ? (
         <div tabIndex={0} role="button" aria-haspopup="menu" aria-label={title} title={title} className={`${btnClass} gap-1 focus-visible:outline-2 focus-visible:outline-primary`}>
@@ -50,11 +55,11 @@ export function Dropdown({ trigger, items, title, align = 'right', btnClass = 'b
           </div>
         </div>
       )}
-      <ul tabIndex={0} role="menu" className={`dropdown-content menu z-30 mt-1 max-w-[calc(100vw-1rem)] ${menuClass} rounded-box border border-base-300 bg-base-100 p-1 shadow-lg`}>
+      <ul tabIndex={0} role="menu" className={`dropdown-content menu z-30 ${up ? 'mb-1' : 'mt-1'} max-w-[calc(100vw-1rem)] ${menuClass} rounded-box border border-base-300 bg-base-100 p-1 shadow-lg`}>
         {items.length === 0 && <li className="menu-disabled"><span>Sin opciones</span></li>}
         {items.map((it) => (
           <li key={it.label} className={it.disabled ? 'menu-disabled' : ''}>
-            <button role="menuitem" disabled={it.disabled} title={it.title} className={it.danger ? 'text-error' : ''} onClick={() => ((document.activeElement as HTMLElement | null)?.blur(), it.onClick())}>
+            <button type="button" role="menuitem" disabled={it.disabled} title={it.title} className={`${it.danger ? 'text-error' : ''} ${it.active ? 'menu-active' : ''}`} aria-current={it.active || undefined} onClick={() => ((document.activeElement as HTMLElement | null)?.blur(), it.onClick())}>
               {it.label}
             </button>
           </li>
@@ -72,7 +77,8 @@ const setOpenDialogs = (f: (l: HTMLDialogElement[]) => HTMLDialogElement[]) => (
 const topDialog = () => openDialogs.at(-1) ?? null
 const subscribeDialogs = (cb: () => void) => (dialogSubs.add(cb), () => void dialogSubs.delete(cb))
 
-export function Dialog({ label, onClose, children, boxClass = '' }: { label: string; onClose(): void; children: ReactNode; boxClass?: string }) {
+/** `guard()` true = Escape is ignored (a dialog that appears on its own must not be closed by a stray key) */
+export function Dialog({ label, onClose, children, boxClass = '', guard }: { label: string; onClose(): void; children: ReactNode; boxClass?: string; guard?: () => boolean }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     const d = ref.current
@@ -86,7 +92,7 @@ export function Dialog({ label, onClose, children, boxClass = '' }: { label: str
     return () => setOpenDialogs((l) => l.filter((x) => x !== d))
   }, [])
   return (
-    <dialog ref={ref} aria-label={label} className="modal" onClose={onClose}>
+    <dialog ref={ref} aria-label={label} className="modal" onClose={onClose} onCancel={(e) => guard?.() && e.preventDefault()} onKeyDown={(e) => e.key === 'Escape' && guard?.() && e.preventDefault()}>
       <div className={`modal-box ${boxClass}`}>{children}</div>
       <form method="dialog" className="modal-backdrop">
         <button tabIndex={-1} aria-label="Cerrar">cerrar</button>

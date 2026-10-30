@@ -1,0 +1,41 @@
+  can make mistakes that allow harmful commands to run, it's recommended to only use in isolated environments.
+  Shift+Tab to change mode.
+
+❯ /model
+  ⎿  Kept model as Haiku 5.5
+
+❯ /model sonnet
+  ⎿  Set model to Sonnet 5.5 and saved as your default for new sessions
+
+❯ /model default
+  ⎿  Set model to Opus 5.5 (default) and saved as your default for new sessions
+
+❯ /model
+  ⎿  Set model to Haiku 5.5 and saved as your default for new sessions
+
+❯ Reply with only the word OK.
+  This second line is part of the same message.
+
+    indented third line
+
+⏺ OK
+
+✻ Baked for 2s · done 9:40 AM
+
+❯ Then reply only with DONE2.
+
+⏺ DONE2
+
+✻ Brewed for 2s · done 9:41 AM
+
+❯ Write the numbers 1 to 60, one per line, nothing else.
+
+· Wibbling…
+  ⎿  Tip: Working on a plan or design doc? Ask Claude to publish it as an artifact — a polished web page you can open in
+     your browser.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt
+--cursor y=37 x=2 bracketedPaste=true exited=null

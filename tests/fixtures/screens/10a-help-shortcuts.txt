@@ -1,0 +1,41 @@
+
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Opus 5.5 with medium effort · Claude <Plan>
+ ▝▝   ▝▝   /…/tmp/proj
+
+
+❯ /clear
+
+❯ /model default
+  ⎿  Set model to Opus 5.5 (default) and saved as your default for new sessions
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                    ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ! for shell mode        double tap esc to clear input      ctrl + shift + _ to undo
+  / for commands          shift + tab to auto-accept edits   ctrl + z to suspend
+  @ for file paths        ctrl + o for verbose output        ctrl + v to paste images
+  /btw for side question  ctrl + t to toggle tasks           opt + p to switch model
+                          backslash (\) + return (⏎) for     ctrl + s to stash prompt
+                          newline                            ctrl + g to edit in $EDITOR
+                                                             /keybindings to customize
+--cursor y=31 x=2 bracketedPaste=true exited=null

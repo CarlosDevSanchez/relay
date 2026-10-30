@@ -85,6 +85,19 @@ body { background: var(--color-base-100); color: var(--color-base-content); font
 .menu-active .btn-ghost:hover { background-color: color-mix(in oklab, currentColor 18%, transparent); }
 .lift { transition: box-shadow 0.15s, border-color 0.15s, background-color 0.15s; }
 
+/* conversation view: off-screen items skip layout/paint (long sessions without a virtualization library); new items rise in */
+.cv { content-visibility: auto; contain-intrinsic-size: auto 3rem; }
+@keyframes relay-rise { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+.rise { animation: relay-rise 0.2s ease-out; }
+/* highlight.js token classes on theme colors */
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-built_in, .hljs-name { color: var(--color-secondary); }
+.hljs-string, .hljs-addition, .hljs-regexp { color: var(--color-success); }
+.hljs-number, .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: var(--color-warning-content); }
+.hljs-title, .hljs-section, .hljs-class .hljs-title { color: var(--color-primary); }
+.hljs-comment, .hljs-quote, .hljs-meta { color: color-mix(in oklab, var(--color-base-content) 55%, transparent); font-style: italic; }
+.hljs-deletion { color: var(--color-error); }
+@media (prefers-color-scheme: dark) { .hljs-number, .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: var(--color-warning); } }
+
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }

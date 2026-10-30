@@ -1,0 +1,41 @@
+
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Haiku 5.5 · Claude <Plan>
+ ▝▝   ▝▝   /…/tmp/proj
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                    You've used 80% of your weekly limit · resets 5pm (Example/Zone)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "refactor <filepath>"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents
+--cursor y=37 x=2 bracketedPaste=true exited=null

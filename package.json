@@ -12,12 +12,11 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "e2e": "electron-vite build && node e2e/smoke.mjs",
-    "postinstall": "node node_modules/electron/install.js && electron-rebuild -f -w node-pty"
+    "postinstall": "node node_modules/electron/install.js && electron-rebuild -f -w node-pty",
+    "dist:mac": "electron-vite build && electron-builder --mac"
   },
   "trustedDependencies": ["electron", "node-pty", "esbuild"],
   "dependencies": {
-    "@xterm/addon-fit": "0.11.0",
-    "@xterm/xterm": "6.0.0",
     "node-pty": "1.1.0"
   },
   "devDependencies": {
@@ -28,9 +27,14 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "@vitest/coverage-v8": "5.0.5",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "daisyui": "5.7.47",
     "electron": "45.0.0",
+    "electron-builder": "26.18.0",
     "electron-vite": "6.0.0",
+    "highlight.js": "11.12.0",
+    "marked": "18.1.2",
     "playwright": "1.64.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
@@ -38,5 +42,47 @@
     "typescript": "7.0.2",
     "vite": "8.3.5",
     "vitest": "5.0.5"
+  },
+  "build": {
+    "appId": "dev.relay.app",
+    "productName": "Relay",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**",
+      "!**/node_modules/node-pty/prebuilds/win32-*",
+      "!**/node_modules/**/src/**",
+      "!**/*.map",
+      "!**/node_modules/node-pty/{deps,scripts}/**",
+      "!**/*.test.js"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "npmRebuild": false,
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": "arm64"
+        },
+        {
+          "target": "zip",
+          "arch": "arm64"
+        }
+      ],
+      "icon": "build/icon.icns",
+      "identity": "-",
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": false
+    },
+    "publish": null
   }
 }

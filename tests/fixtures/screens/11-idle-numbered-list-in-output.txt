@@ -1,0 +1,41 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Haiku 5.5 · Claude <Plan>
+ ▝▝   ▝▝   /…/tmp/proj
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+❯ Name three fruits as a numbered list.
+
+⏺ Do you want to pick one? Here they are:
+  1. Apple
+  2. Pear
+  3. Plum
+
+✻ Baked for 2s · done 9:41 AM
+
+                                                                                                    ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts
+--cursor y=37 x=2 bracketedPaste=true exited=null

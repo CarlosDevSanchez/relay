@@ -1,6 +1,8 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal, type ITheme } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
+import { registerScreen } from './screens'
+import { maskDim } from '../shared/screen'
 
 const FONT = 'ui-monospace, "SF Mono", Menlo, monospace'
 
@@ -51,10 +53,14 @@ export function termTheme(): ITheme {
   return t
 }
 
-/** Mount once per pty (parent keys it by ptyId); hidden, never unmounted, when its tab is inactive. */
-export function TerminalPane({ ptyId, visible }: { ptyId: number; visible: boolean }) {
+/**
+ * Mount once per pty (parent keys it by ptyId); hidden, never unmounted, when its tab is inactive.
+ * `keep`: hidden with `visibility` instead of `display:none`, so it keeps its size (fit, pty size) and its buffer while the chat (only when enabled) covers it.
+ */
+export function TerminalPane({ ptyId, visible, keep }: { ptyId: number; visible: boolean; keep?: boolean }) {
   const el = useRef<HTMLDivElement>(null)
   const sync = useRef<() => void>(() => undefined)
+  const focus = useRef<() => void>(() => undefined)
   useEffect(() => {
     const theme = termTheme()
     const term = new Terminal({ fontSize: 13, fontFamily: FONT, theme, cursorBlink: true })
@@ -68,7 +74,19 @@ export function TerminalPane({ ptyId, visible }: { ptyId: number; visible: boole
       term.refresh(0, term.rows - 1) // output written while hidden is painted now
       window.relay.pty.resize(ptyId, term.cols, term.rows)
     }
+    focus.current = () => term.focus()
     sync.current()
+    let parsed = 0
+    const unreg = registerScreen(ptyId, {
+      read: () => {
+        const b = term.buffer.active
+        const rows = Array.from({ length: term.rows }, (_, i) => b.getLine(b.baseY + i))
+        // dim/faint cells (the CLI's ghost suggestion) blanked, so they do not read as typed input
+        const dim = rows.map((l) => maskDim(l ? Array.from({ length: l.length }, (_, x) => l.getCell(x)!).map((c) => ({ ch: c.getChars(), dim: !!c.isDim(), inverse: !!c.isInverse() })) : []))
+        return { lines: rows.map((l) => l?.translateToString(true) ?? ''), dim, cursorY: b.cursorY, seq: parsed, bracketed: term.modes.bracketedPasteMode }
+      },
+      flush: () => new Promise<void>((r) => term.write('', r))
+    })
     const ro = new ResizeObserver(() => sync.current())
     ro.observe(el.current!)
     const mq = matchMedia('(prefers-color-scheme: dark)')
@@ -78,11 +96,11 @@ export function TerminalPane({ ptyId, visible }: { ptyId: number; visible: boole
       el.current!.style.backgroundColor = t.background!
     }
     mq.addEventListener('change', retheme)
-    const offData = window.relay.pty.onData((id, d) => id === ptyId && term.write(d))
+    const offData = window.relay.pty.onData((id, d, seq) => id === ptyId && term.write(d, () => (parsed = seq)))
     const offExit = window.relay.pty.onExit((id, code) => id === ptyId && term.write(`\r\n[process exited: ${code}]\r\n`))
     const onKey = term.onData((d) => window.relay.pty.write(ptyId, d))
-    term.focus()
     return () => {
+      unreg()
       ro.disconnect()
       mq.removeEventListener('change', retheme)
       offData()
@@ -93,7 +111,11 @@ export function TerminalPane({ ptyId, visible }: { ptyId: number; visible: boole
   }, [ptyId])
   // refit when the pane is shown again (tab switch, collapsed login terminal opened)
   useEffect(() => {
-    if (visible) requestAnimationFrame(() => sync.current())
+    if (visible)
+      requestAnimationFrame(() => {
+        sync.current()
+        focus.current()
+      })
   }, [visible])
-  return <div ref={el} className={`h-full w-full px-3 py-2 ${visible ? 'fade-in' : 'hidden'}`} />
+  return <div ref={el} className={`h-full w-full px-3 py-2 ${visible ? 'fade-in' : keep ? 'invisible' : 'hidden'}`} />
 }

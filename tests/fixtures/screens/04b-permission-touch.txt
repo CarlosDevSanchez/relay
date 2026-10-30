@@ -1,0 +1,41 @@
+  59
+  60
+
+✻ Sautéed for 1s · done 9:41 AM
+
+❯ Then reply only with QUEUED.
+
+⏺ QUEUED
+
+✻ Sautéed for 1s · done 9:41 AM
+
+❯ Use the Bash tool to run exactly: ls
+
+  Listed 1 directory
+
+⏺ The ls command returned one entry: notes.txt.
+
+✻ Cogitated for 4s · done 9:41 AM
+
+❯ Use the Bash tool to run exactly: touch created1.txt
+
+  Creating empty file created1.txt
+  ⎿  $ touch created1.txt
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+ Create empty file created1.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ touch created1.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to
+      /tmp/proj
+      from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend
+--cursor y=32 x=1 bracketedPaste=true exited=null

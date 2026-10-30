@@ -1,17 +1,20 @@
+import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserWindow, Notification, app, dialog, ipcMain, nativeTheme, shell } from 'electron'
-import type { Account, Candidate, HandoffRequest, StartRequest, StartResult } from '../shared/types'
+import type { Account, Candidate, HandoffRequest, StartRequest, StartResult, UpdateResult } from '../shared/types'
+import { createHub } from './transcript/session'
 import { limitedFromUsage } from '../shared/usage'
 import { findRollout, parseCodexLimitLine, watchCodexNewSession } from './codex'
-import { buildEnv, plainEnv } from './env'
+import { LOGIN_PATH_CMD, buildEnv, parseLoginPath, plainEnv, setLoginPath } from './env'
 import { buildCatalog } from './catalog'
 import { detectCli } from './cli'
 import { mcpReport } from './mcp'
 import { copySessionForHandoff, runHandoff, sourceExists } from './handoff'
-import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty } from './pty'
+import { hasLivePty, killAccountPtys, killAll, killPty, livePtyCount, markStale, ptyInfo, setPtySession, wasBound, resizePty, spawnPty, writePty, sendPty, stopPty, clearPty, answerPty, keyPty, ptyCwd } from './pty'
+import { listFiles } from './files'
 import { providers } from './providers'
 import { type LimitInfo, scheduleAt, pickRebind, watchLimits, watchNewSession } from './limit'
 import { candidateDirs, canProbe, claudeProjectDir, dirProvider, isDefaultInstall } from './paths'
@@ -21,13 +24,35 @@ import { adoptable, loadRegistry, register, registerHandoff, touchSession, forge
 import { drifted, linkAccount, nextFlag, sharedDir, unlinkAccount } from './shared'
 import { listSessions } from './sessions'
 import { accountStatus } from './usage'
+import { checkUpdate, releaseUrl } from './updates'
 import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount, setSharedMemory } from './store'
-import { checkAccountId, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart } from './validate'
+import { checkAccountId, checkAnswer, checkClaudePty, checkClear, checkKey, checkPtyId, checkSendText, checkSeq, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart, checkAgentId, checkOffset, checkTranscriptRef, checkVersion } from './validate'
 
 const HOME = process.env.RELAY_HOME || join(homedir(), '.relay')
 let win: BrowserWindow
 let tracker: ReturnType<typeof trackUsage> | undefined
 let statusScript = '' // Relay's status line script (written at startup; empty = could not be written, nothing is injected)
+
+// Update notice: GitHub Releases `latest` of Relay's own repo, only in the packaged app (or in dev with the e2e URL); the e2e override is never read when packaged
+const updatesUrl = app.isPackaged ? undefined : process.env.RELAY_E2E_UPDATES_URL
+
+async function updateCheck(): Promise<UpdateResult> {
+  const current = app.getVersion()
+  const r = await checkUpdate(current, updatesUrl)
+  if (r.status !== 'available') return { status: r.status, current }
+  return { status: 'available', current, info: r.info, skipped: r.info.version === loadPrefs(HOME).updates.skipped }
+}
+
+function watchUpdates(): void {
+  if (!app.isPackaged && !updatesUrl) return
+  const run = async () => {
+    if (!loadPrefs(HOME).updates.check) return
+    const r = await updateCheck()
+    if (r.status === 'available' && !r.skipped) send('updates:available', r)
+  }
+  setTimeout(() => void run(), updatesUrl ? 1000 : 10_000).unref() // e2e override: no 10 s wait
+  setInterval(() => void run(), 6 * 3600_000).unref()
+}
 
 const list = (): Account[] =>
   loadAccounts(HOME).map((a) => {
@@ -40,6 +65,7 @@ const send = (ch: string, ...a: unknown[]): void => {
 }
 
 const watchers = new Map<number, { stop(): void }>()
+const hub = createHub((b) => send('session:events', b)) // F6.1 transcript streams, refcounted per accountId+sessionId
 const reminders = new Map<string, () => void>()
 
 const live = new Set<Notification>() // keep a reference until click/close, or GC may drop the click
@@ -70,8 +96,9 @@ const record = (fn: Parameters<typeof updateRegistry>[1]): void => {
   }
 }
 const touched = new Map<number, number>()
-const ptyData = (id: number, d: string): void => {
-  send('pty:data', id, d)
+const fileCache = new Map<number, { at: number; files: string[] }>()
+const ptyData = (id: number, d: string, seq: number): void => {
+  send('pty:data', id, d, seq)
   const sid = ptyInfo(id)?.sessionId
   if (sid && Date.now() - (touched.get(id) ?? 0) > 60_000) {
     touched.set(id, Date.now()) // history: "last active", at most once a minute per pty
@@ -82,6 +109,7 @@ const ptyExit = (id: number, code: number): void => {
   touched.delete(id)
   watchers.get(id)?.stop()
   watchers.delete(id)
+  fileCache.delete(id)
   send('pty:exit', id, code)
 }
 
@@ -276,6 +304,27 @@ function handle(): void {
     const r = checkSessionRef(cwd, sessionId, loadProjects(HOME))
     updateRegistry(HOME, (l) => forgetSession(l, r.sessionId)) // the registry entry only; transcripts are never deleted
   })
+  // F6.1 transcript view: the renderer sends ids only; the file is resolved here from the account and the session
+  const tsub = (ref: unknown): { accountId: string; file: string; sessionId: string } => {
+    const r = checkTranscriptRef(ref, loadAccounts(HOME), loadProjects(HOME))
+    return { accountId: r.account.id, file: join(claudeProjectDir(r.account.configDir, r.cwd), `${r.sessionId}.jsonl`), sessionId: r.sessionId }
+  }
+  const tget = (ref: unknown) => {
+    const t = tsub(ref)
+    const s = hub.get(t.accountId, t.sessionId)
+    if (!s) throw new Error('Not subscribed')
+    return s
+  }
+  ipcMain.handle('session:subscribe', (_e, ref: unknown) => {
+    const t = tsub(ref)
+    return hub.subscribe(t.accountId, t.sessionId, t.file)
+  })
+  ipcMain.handle('session:unsubscribe', (_e, ref: unknown) => {
+    const t = tsub(ref)
+    hub.unsubscribe(t.accountId, t.sessionId)
+  })
+  ipcMain.handle('session:older', (_e, ref: unknown, before: unknown) => tget(ref).older(checkOffset(before)))
+  ipcMain.handle('session:subagent', (_e, ref: unknown, agentId: unknown, before: unknown) => tget(ref).subagent(checkAgentId(agentId), before === undefined ? undefined : checkOffset(before)))
   ipcMain.handle('usage:get', () => tracker?.get() ?? [])
   ipcMain.handle('cli:detect', async () => {
     const env = plainEnv()
@@ -304,6 +353,11 @@ function handle(): void {
   ipcMain.handle('pty:start', (_e, req: StartRequest) => start(req))
   ipcMain.handle('prefs:get', () => loadPrefs(HOME))
   ipcMain.handle('prefs:set', (_e, patch) => savePrefs(HOME, patch))
+  ipcMain.handle('app:chat', () => !app.isPackaged && process.env.RELAY_E2E_CHAT === '1') // chat mode is hidden (terminal-first) except for e2e/dev with this var; the future fix phase flips the default
+  ipcMain.handle('updates:version', () => app.getVersion())
+  ipcMain.handle('updates:check', updateCheck)
+  ipcMain.handle('updates:open', (_e, v: unknown) => shell.openExternal(releaseUrl(checkVersion(v)))) // built from the validated version, never from GitHub's html_url
+  ipcMain.handle('updates:skip', (_e, v: unknown) => void savePrefs(HOME, { updates: { skipped: checkVersion(v) } }))
   ipcMain.handle('limit:remind', (_e, accountId: string, resetAt: number) => {
     const a = checkAccountId(accountId, loadAccounts(HOME))
     checkReminder(resetAt)
@@ -319,6 +373,27 @@ function handle(): void {
   })
   ipcMain.handle('pty:kill', (_e, id: number) => killPty(id))
   ipcMain.on('pty:write', (_e, id: number, d: string) => writePty(id, d))
+  // composer bridge (F6.3): the renderer sends ids and text; the bytes are built in bridge.ts
+  const claudePty = (id: unknown): number => {
+    const n = checkPtyId(id)
+    checkClaudePty(ptyInfo(n), loadAccounts(HOME))
+    return n
+  }
+  ipcMain.handle('pty:send', (_e, id: unknown, text: unknown, seq: unknown) => sendPty(claudePty(id), checkSendText(text), checkSeq(seq)))
+  ipcMain.handle('pty:key', (_e, id: unknown, seq: unknown, key: unknown) => keyPty(claudePty(id), checkKey(key), checkSeq(seq)))
+  // `@` autocomplete (F6.5): file names of the tab's own project only, never contents
+  ipcMain.handle('files:list', (_e, id: unknown) => {
+    const n = claudePty(id)
+    const hit = fileCache.get(n)
+    if (hit && Date.now() - hit.at < 5000) return hit.files // asked on every `@` token: walk at most once per 5 s
+    const files = listFiles(ptyCwd(n)!)
+    fileCache.set(n, { at: Date.now(), files })
+    return files
+  })
+  ipcMain.handle('pty:stop', (_e, id: unknown) => stopPty(claudePty(id)))
+  ipcMain.handle('pty:clear', (_e, id: unknown, opts: unknown, seq: unknown) => clearPty(claudePty(id), checkClear(opts), checkSeq(seq)))
+  // prompt cards (F6.4): a closed action set; the renderer compares the card's fingerprint with the live screen, main applies the seq guard
+  ipcMain.handle('pty:answer', (_e, id: unknown, seq: unknown, action: unknown) => answerPty(claudePty(id), checkSeq(seq), checkAnswer(action)))
   ipcMain.on('pty:resize', (_e, id: number, c: number, r: number) => resizePty(id, c, r))
   ipcMain.handle('handoff', (_e, req: HandoffRequest) => {
     const [from, to] = checkHandoff(req, loadAccounts(HOME), loadProjects(HOME))
@@ -344,6 +419,14 @@ function handle(): void {
 }
 
 app.whenReady().then(() => {
+  // Finder/Dock launches get launchd's minimal PATH: borrow the login shell's PATH (only PATH). Skipped for e2e (RELAY_E2E_BACKGROUND set) so the stub stays first.
+  if (app.isPackaged && !process.env.RELAY_E2E_BACKGROUND) {
+    try {
+      setLoginPath(parseLoginPath(execFileSync(process.env.SHELL || '/bin/zsh', ['-ilc', LOGIN_PATH_CMD], { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })))
+    } catch {
+      // no shell / timeout: keep the built-in extras
+    }
+  }
   pruneCopies(HOME)
   try {
     statusScript = writeStatusScript(HOME)
@@ -355,7 +438,9 @@ app.whenReady().then(() => {
   const iconFile = app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(app.getAppPath(), 'build/icon.png')
   const icon = existsSync(iconFile) ? iconFile : undefined
   if (process.platform === 'darwin' && !app.isPackaged && icon) app.dock?.setIcon(icon) // dev only: a packaged app carries its .icns
+  const bg = !!process.env.RELAY_E2E_BACKGROUND // e2e: keep the window invisible and never take focus
   win = new BrowserWindow({
+    ...(bg ? { show: false } : {}),
     ...(icon ? { icon } : {}),
     width: 1280,
     minWidth: 900,
@@ -367,15 +452,25 @@ app.whenReady().then(() => {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      ...(bg ? { backgroundThrottling: false } : {}) // e2e: an invisible window must keep painting or Playwright stalls
     }
   })
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (e, url) => {
     if (url !== win.webContents.getURL()) e.preventDefault()
   })
+  // a reloaded or crashed renderer loses its subscriptions: drop the streams (it subscribes again)
+  win.webContents.on('did-start-navigation', (_e, _url, inPlace, isMainFrame) => isMainFrame && !inPlace && hub.stopAll())
+  win.webContents.on('render-process-gone', () => hub.stopAll())
+  if (bg) {
+    win.setOpacity(0)
+    win.showInactive()
+    app.dock?.hide()
+  }
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadFile(join(__dirname, '../renderer/index.html'))
+  watchUpdates()
   tracker = trackUsage(HOME, {
     accounts: () => loadAccounts(HOME),
     warnAt: () => loadPrefs(HOME).usage.warnAt,
@@ -387,7 +482,7 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('will-quit', () => (tracker?.stop(), void killAll()))
+app.on('will-quit', () => (tracker?.stop(), hub.stopAll(), void killAll()))
 
 app.on('window-all-closed', () => {
   app.quit()

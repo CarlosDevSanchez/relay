@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Account, type AccountStatus, type AccountUsage, type CliStatus, CROSS_PROVIDER, type LimitHit, type ProviderId, type SessionInfo, type SharedReport } from '../shared/types'
 import { AdoptDialog } from './Adopt'
+import { UpdateDialog } from './Update'
 import { LoginPanel } from './Login'
 import { Onboarding } from './Onboarding'
 import { Settings } from './Settings'
@@ -95,6 +96,9 @@ export function App() {
   useEffect(() => {
     if (hit) void window.relay.prefs.get().then((x) => setAutoCont(x.handoff.autoContinue))
   }, [hit?.ptyId])
+
+  const [upd, setUpd] = useState<Parameters<typeof UpdateDialog>[0]['r'] | null>(null)
+  useEffect(() => window.relay.updates.onAvailable(setUpd), [])
 
   const loadWarnAt = useCallback(() => void window.relay.prefs.get().then((x) => setWarnAt(x.usage.warnAt)), [])
   useEffect(loadWarnAt, [loadWarnAt])
@@ -577,6 +581,7 @@ export function App() {
           remove={remove}
           add={addAccount}
           login={(a) => start('login', a.id)}
+          showUpdate={setUpd}
         />
       )}
       {hit && (
@@ -623,6 +628,14 @@ export function App() {
             <button className="btn" data-autofocus onClick={() => dropHit()}>Cerrar</button>
           </div>
         </Dialog>
+      )}
+      {upd && (
+        <UpdateDialog
+          r={upd}
+          onClose={() => setUpd(null)}
+          onSkip={() => void window.relay.updates.skip(upd.info.version).then(() => setUpd(null), (e) => setError(e instanceof Error ? e.message : String(e)))}
+          onOpen={() => void window.relay.updates.open(upd.info.version).then(() => setUpd(null), (e) => setError(e instanceof Error ? e.message : String(e)))}
+        />
       )}
       {adoptFor && <AdoptDialog cwd={adoptFor} accounts={accounts} onClose={() => setAdoptFor(null)} onPick={(s) => void adopt(adoptFor, s)} />}
       <ToastStack t={toasts} />

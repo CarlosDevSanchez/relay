@@ -156,3 +156,5 @@ export function checkAnswer(v: unknown): AnswerAction {
   if (o.kind === 'line' && typeof o.text === 'string' && o.text.length > 0 && o.text.length <= MAX_ANSWER && !o.text.includes('\0')) return { kind: 'line', text: o.text }
   throw new Error('Invalid answer')
 }
+
+export { checkVersion } from './updates'

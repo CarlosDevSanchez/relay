@@ -112,7 +112,16 @@ export interface Prefs {
   usage: { statusLine: boolean; warnAt: number }
   /** after a user-confirmed handoff, the target is started with `message` as the CLI's initial prompt */
   handoff: { autoContinue: boolean; message: string }
+  /** check: ask GitHub Releases for a newer Relay (packaged app only); skipped: version the user chose to ignore ('' = none) */
+  updates: { check: boolean; skipped: string }
 }
+
+/** A newer published release (notes are plain text, truncated in main). */
+export interface UpdateInfo {
+  version: string
+  notes: string
+}
+export type UpdateResult = { current: string } & ({ status: 'current' | 'error' } | { status: 'available'; info: UpdateInfo; skipped: boolean })
 
 export interface CliInfo {
   installed: boolean
@@ -267,7 +276,16 @@ export interface RelayApi {
   /** `@` autocomplete: relative file names of the tab's project (main lists them; contents are never read) */
   files: { list(ptyId: number): Promise<string[]> }
   handoff(req: HandoffRequest): Promise<StartResult>
-  prefs: { get(): Promise<Prefs>; set(patch: Partial<Prefs>): Promise<Prefs> }
+  prefs: { get(): Promise<Prefs>; set(patch: { [K in keyof Prefs]?: Partial<Prefs[K]> }): Promise<Prefs> }
+  updates: {
+    version(): Promise<string>
+    check(): Promise<UpdateResult>
+    /** opens the release page of `version` in the browser (main validates it and builds the URL; Relay downloads nothing) */
+    open(version: string): Promise<void>
+    skip(version: string): Promise<void>
+    /** automatic check found a newer version the user has not skipped */
+    onAvailable(cb: (r: Extract<UpdateResult, { status: 'available' }>) => void): () => void
+  }
   cli: {
     detect(): Promise<CliStatus>
     /** after a main-side confirmation, runs the provider's official installer in a new pty; null = cancelled */

@@ -1,0 +1,25 @@
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+permissions:
+  contents: write
+jobs:
+  draft:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: scripts/release-guard.sh "$GITHUB_REF_NAME"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run dist:mac
+      - run: cd dist && shasum -a 256 *.dmg *.zip > SHA256SUMS
+      - run: gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "Relay $GITHUB_REF_NAME" dist/*.dmg dist/*.zip dist/SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}

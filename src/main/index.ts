@@ -4,7 +4,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserWindow, Notification, app, dialog, ipcMain, nativeTheme, shell } from 'electron'
-import type { Account, Candidate, HandoffRequest, StartRequest, StartResult } from '../shared/types'
+import type { Account, Candidate, HandoffRequest, StartRequest, StartResult, UpdateResult } from '../shared/types'
 import { createHub } from './transcript/session'
 import { limitedFromUsage } from '../shared/usage'
 import { findRollout, parseCodexLimitLine, watchCodexNewSession } from './codex'
@@ -24,13 +24,35 @@ import { adoptable, loadRegistry, register, registerHandoff, touchSession, forge
 import { drifted, linkAccount, nextFlag, sharedDir, unlinkAccount } from './shared'
 import { listSessions } from './sessions'
 import { accountStatus } from './usage'
+import { checkUpdate, releaseUrl } from './updates'
 import { addAccount, addProject, isManaged, loadAccounts, loadCopies, loadProjects, pruneCopies, recordCopy, removeAccount, renameAccount, setSharedMemory } from './store'
-import { checkAccountId, checkAnswer, checkClaudePty, checkClear, checkKey, checkPtyId, checkSendText, checkSeq, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart, checkAgentId, checkOffset, checkTranscriptRef } from './validate'
+import { checkAccountId, checkAnswer, checkClaudePty, checkClear, checkKey, checkPtyId, checkSendText, checkSeq, checkHandoff, checkInstall, checkNewAccount, checkReminder, checkRename, checkSessionRef, checkSharedToggle, checkStart, checkAgentId, checkOffset, checkTranscriptRef, checkVersion } from './validate'
 
 const HOME = process.env.RELAY_HOME || join(homedir(), '.relay')
 let win: BrowserWindow
 let tracker: ReturnType<typeof trackUsage> | undefined
 let statusScript = '' // Relay's status line script (written at startup; empty = could not be written, nothing is injected)
+
+// Update notice: GitHub Releases `latest` of Relay's own repo, only in the packaged app (or in dev with the e2e URL); the e2e override is never read when packaged
+const updatesUrl = app.isPackaged ? undefined : process.env.RELAY_E2E_UPDATES_URL
+
+async function updateCheck(): Promise<UpdateResult> {
+  const current = app.getVersion()
+  const r = await checkUpdate(current, updatesUrl)
+  if (r.status !== 'available') return { status: r.status, current }
+  return { status: 'available', current, info: r.info, skipped: r.info.version === loadPrefs(HOME).updates.skipped }
+}
+
+function watchUpdates(): void {
+  if (!app.isPackaged && !updatesUrl) return
+  const run = async () => {
+    if (!loadPrefs(HOME).updates.check) return
+    const r = await updateCheck()
+    if (r.status === 'available' && !r.skipped) send('updates:available', r)
+  }
+  setTimeout(() => void run(), updatesUrl ? 1000 : 10_000).unref() // e2e override: no 10 s wait
+  setInterval(() => void run(), 6 * 3600_000).unref()
+}
 
 const list = (): Account[] =>
   loadAccounts(HOME).map((a) => {
@@ -331,6 +353,10 @@ function handle(): void {
   ipcMain.handle('pty:start', (_e, req: StartRequest) => start(req))
   ipcMain.handle('prefs:get', () => loadPrefs(HOME))
   ipcMain.handle('prefs:set', (_e, patch) => savePrefs(HOME, patch))
+  ipcMain.handle('updates:version', () => app.getVersion())
+  ipcMain.handle('updates:check', updateCheck)
+  ipcMain.handle('updates:open', (_e, v: unknown) => shell.openExternal(releaseUrl(checkVersion(v)))) // built from the validated version, never from GitHub's html_url
+  ipcMain.handle('updates:skip', (_e, v: unknown) => void savePrefs(HOME, { updates: { skipped: checkVersion(v) } }))
   ipcMain.handle('limit:remind', (_e, accountId: string, resetAt: number) => {
     const a = checkAccountId(accountId, loadAccounts(HOME))
     checkReminder(resetAt)
@@ -425,7 +451,8 @@ app.whenReady().then(() => {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      ...(bg ? { backgroundThrottling: false } : {}) // e2e: an invisible window must keep painting or Playwright stalls
     }
   })
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -442,6 +469,7 @@ app.whenReady().then(() => {
   }
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadFile(join(__dirname, '../renderer/index.html'))
+  watchUpdates()
   tracker = trackUsage(HOME, {
     accounts: () => loadAccounts(HOME),
     warnAt: () => loadPrefs(HOME).usage.warnAt,

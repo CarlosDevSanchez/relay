@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 
+const APP = process.env.RELAY_E2E_APP // packaged binary to test instead of the dev build (RELAY_E2E_INSTALL_SCRIPT is ignored there)
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const shots = join(root, 'e2e/screenshots')
 mkdirSync(shots, { recursive: true })
@@ -73,9 +74,9 @@ const setup = (name) => {
   return dirs
 }
 const launch = (d, extra = {}) => {
-  const env = { ...process.env, RELAY_HOME: d.relayHome, HOME: d.home, PATH: `${d.bin}:/usr/bin:/bin`, STUB_NODE: process.execPath, STUB_TUI: join(root, 'e2e/fake-claude-tui.mjs'), ...extra }
+  const env = { ...process.env, RELAY_HOME: d.relayHome, HOME: d.home, RELAY_E2E_BACKGROUND: '1', PATH: `${d.bin}:/usr/bin:/bin`, STUB_NODE: process.execPath, STUB_TUI: join(root, 'e2e/fake-claude-tui.mjs'), ...extra }
   delete env.ELECTRON_RUN_AS_NODE
-  return electron.launch({ args: [root, `--user-data-dir=${join(d.home, 'userdata')}`], env }) // own Chromium profile: localStorage (sidebar UI state) never leaks between scenarios or into a real app profile
+  return electron.launch({ ...(APP ? { executablePath: APP } : {}), args: [...(APP ? [] : [root]), `--user-data-dir=${join(d.home, 'userdata')}`], env }) // own Chromium profile: localStorage (sidebar UI state) never leaks between scenarios or into a real app profile
 }
 
 // every visible element of the sidebar stays inside its box and the page never scrolls sideways
@@ -237,8 +238,8 @@ const mainOverflow = (page, withTab) =>
   assert.ok(!calls.some((c) => c.startsWith(join(d.home, '.claude-foo'))), 'claude never ran against the candidate dir')
 }
 
-// ---- scenario 2: claude missing -> installer visible in onboarding (test installer script, never the real one) ----
-{
+// ---- scenario 2: claude missing -> installer visible in onboarding (test installer script, never the real one; skipped for the packaged app, which ignores the test script) ----
+if (!APP) {
   const d = setup('two')
   const app = await launch(d, { RELAY_E2E_INSTALL_SCRIPT: `echo installing; cp "${stub}" "${d.bin}/claude"; chmod +x "${d.bin}/claude"; sleep 1` })
   try {
@@ -1005,7 +1006,7 @@ const mainOverflow = (page, withTab) =>
         if (await fn()) return
         await new Promise((r) => setTimeout(r, 200))
       }
-      assert.fail(`timeout: ${what}`)
+      assert.fail(`timeout: ${typeof what === 'function' ? what() : what}`)
     }
     const state = (s) => page.waitForFunction((x) => document.querySelector('[data-testid=activity]')?.dataset.state === x, s, { timeout: t })
     const PS = '\x1b[200~'
@@ -1041,7 +1042,7 @@ const mainOverflow = (page, withTab) =>
     await composer.press('Shift+Enter')
     await composer.pressSequentially('linea2')
     await composer.press('Enter')
-    await poll(() => bytes().slice(m) === `${PS}linea1\nlinea2${PE}\r`, 'multi-line message arrived intact')
+    await poll(() => bytes().slice(m) === `${PS}linea1\nlinea2${PE}\r`, () => `multi-line message arrived intact, got ${JSON.stringify(bytes().slice(m))}`)
     await chat.getByText('Respuesta a: linea1').waitFor({ timeout: t })
     await state('idle')
 

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -7,7 +8,7 @@ import type { Account, Candidate, HandoffRequest, StartRequest, StartResult } fr
 import { createHub } from './transcript/session'
 import { limitedFromUsage } from '../shared/usage'
 import { findRollout, parseCodexLimitLine, watchCodexNewSession } from './codex'
-import { buildEnv, plainEnv } from './env'
+import { LOGIN_PATH_CMD, buildEnv, parseLoginPath, plainEnv, setLoginPath } from './env'
 import { buildCatalog } from './catalog'
 import { detectCli } from './cli'
 import { mcpReport } from './mcp'
@@ -391,6 +392,14 @@ function handle(): void {
 }
 
 app.whenReady().then(() => {
+  // Finder/Dock launches get launchd's minimal PATH: borrow the login shell's PATH (only PATH). Skipped for e2e (RELAY_E2E_BACKGROUND set) so the stub stays first.
+  if (app.isPackaged && !process.env.RELAY_E2E_BACKGROUND) {
+    try {
+      setLoginPath(parseLoginPath(execFileSync(process.env.SHELL || '/bin/zsh', ['-ilc', LOGIN_PATH_CMD], { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })))
+    } catch {
+      // no shell / timeout: keep the built-in extras
+    }
+  }
   pruneCopies(HOME)
   try {
     statusScript = writeStatusScript(HOME)
@@ -402,7 +411,9 @@ app.whenReady().then(() => {
   const iconFile = app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(app.getAppPath(), 'build/icon.png')
   const icon = existsSync(iconFile) ? iconFile : undefined
   if (process.platform === 'darwin' && !app.isPackaged && icon) app.dock?.setIcon(icon) // dev only: a packaged app carries its .icns
+  const bg = !!process.env.RELAY_E2E_BACKGROUND // e2e: keep the window invisible and never take focus
   win = new BrowserWindow({
+    ...(bg ? { show: false } : {}),
     ...(icon ? { icon } : {}),
     width: 1280,
     minWidth: 900,
@@ -424,6 +435,11 @@ app.whenReady().then(() => {
   // a reloaded or crashed renderer loses its subscriptions: drop the streams (it subscribes again)
   win.webContents.on('did-start-navigation', (_e, _url, inPlace, isMainFrame) => isMainFrame && !inPlace && hub.stopAll())
   win.webContents.on('render-process-gone', () => hub.stopAll())
+  if (bg) {
+    win.setOpacity(0)
+    win.showInactive()
+    app.dock?.hide()
+  }
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadFile(join(__dirname, '../renderer/index.html'))
   tracker = trackUsage(HOME, {

@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { classifyScreen } from '../src/shared/screen'
+import { sendPlan } from '../src/shared/composer'
+import { classifyScreen, maskDim } from '../src/shared/screen'
 
 const dir = join(__dirname, 'fixtures/screens')
 /** fixture file -> { lines, cursor, exited } (the last line is harness metadata) */
@@ -46,6 +47,37 @@ describe('classifier details', () => {
   })
   it('the placeholder is not pending input', () => {
     expect(classifyScreen({ lines: box('Try "otra cosa"'), cursorY: 1 }).state).toBe('idle')
+  })
+  // SYNTHETIC / unverified against the real CLI: the next-prompt suggestion drawn dim in the empty box after a turn
+  it('dim ghost text in the box is not input (idle, send), the same text not dim is input-pending', () => {
+    const lines = box('commit these changes')
+    const mask = lines.map((l, i) => (i === 1 ? l.replace('commit these changes', ' '.repeat(20)) : l))
+    expect(classifyScreen({ lines, cursorY: 1, dim: mask }).state).toBe('idle')
+    expect(sendPlan(classifyScreen({ lines, cursorY: 1, dim: mask }).state)).toBe('send')
+    expect(classifyScreen({ lines, cursorY: 1, dim: lines }).state).toBe('input-pending')
+    expect(classifyScreen({ lines, cursorY: 1 }).state).toBe('input-pending')
+  })
+  it('maskDim: cursor-inverse first char over a dim suggestion is blanked (synthetic, from CLI 2.1.312 bundle strings)', () => {
+    const row = (t: string, f: (i: number, n: number) => { dim: boolean; inverse: boolean }) => [...t].map((ch, i, a) => ({ ch, ...f(i, a.length) }))
+    const ghost = row('commit', (i) => ({ dim: i > 0, inverse: i === 0 }))
+    const lines = box('commit')
+    const dim = [lines[0]!, `❯ ${maskDim(ghost)}`, lines[2]!, lines[3]!]
+    expect(maskDim(ghost)).toBe('')
+    expect(classifyScreen({ lines, cursorY: 1, dim }).state).toBe('idle')
+    // typed text under the cursor: inverse followed by normal, or alone, is kept
+    expect(maskDim(row('hola', (i) => ({ dim: false, inverse: i === 1 })))).toBe('hola')
+    expect(maskDim(row('a', () => ({ dim: false, inverse: true })))).toBe('a')
+    expect(classifyScreen({ lines: box('a'), cursorY: 1, dim: box(maskDim(row('a', () => ({ dim: false, inverse: true })))) }).state).toBe('input-pending')
+  })
+  it('maskDim only masks the placeholder shape (typed text + dim tail, dim after normal text, stay input)', () => {
+    const mk = (t: string, f: (i: number) => { dim: boolean; inverse: boolean }) => [...t].map((ch, i) => ({ ch, ...f(i) }))
+    expect(maskDim(mk('hola mundo', (i) => ({ dim: i > 4, inverse: false })))).toBe('hola mundo')
+    expect(maskDim(mk('hola mundo', (i) => ({ dim: i > 4, inverse: i === 0 })))).toBe('hola mundo')
+    expect(maskDim(mk('all dim', () => ({ dim: true, inverse: false })))).toBe('')
+    expect(maskDim([])).toBe('')
+    // prompt glyph kept; a CJK first char (its width-0 continuation cell has ch '') under the cursor still masks
+    const cjk = [{ ch: '❯', dim: false, inverse: false }, { ch: '你', dim: false, inverse: true }, { ch: '', dim: false, inverse: false }, { ch: 'x', dim: true, inverse: false }]
+    expect(maskDim(cjk)).toBe('❯')
   })
   it('the lowest pair of rules is the box (an older pair above is history)', () => {
     const up = [rule, '❯ old', rule, 'salida', ...box('')]

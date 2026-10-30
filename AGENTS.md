@@ -45,7 +45,8 @@ bun run typecheck
 bun run test         # vitest
 bun run coverage     # v8 coverage of pure src/main modules
 bun run build
-bun run e2e          # builds, then drives the app with Playwright against a stub `claude` in a temp RELAY_HOME/HOME; never touches real data
+bun run dist:mac     # electron-builder: ad-hoc signed arm64 Relay.app + dmg/zip in dist/ (README "Build for macOS"); RELAY_E2E_APP=<binary> node e2e/smoke.mjs runs the smoke against it
+bun run e2e          # builds, then drives the app with Playwright against a stub `claude` in a temp RELAY_HOME/HOME; never touches real data; the smoke sets RELAY_E2E_BACKGROUND=1 (window invisible, shown inactive, no dock icon, no focus steal; only affects visibility)
 ```
 
 ## Workflow
@@ -56,6 +57,6 @@ bun run e2e          # builds, then drives the app with Playwright against a stu
 - Before pushing, reproduce CI locally.
 
 ## Status
-F0-F4, F4.1 (daisyUI UI + auto-continue), F5 (Codex, same-provider), F5.1 (official usage bars, Relay-only history, logo; committed) done; F5.2 (compact, collapsible account cards; UI state in localStorage) done. F6.1 (transcript parser + `session:*` IPC) and F6.2 (conversation view) and F6.3 (chat-first core: hidden-but-live terminal, screen classifier, composer bridge, Stop) done on `feat/f6`. F6 (Vista enriquecida) in progress: F6.0 research spike done (docs/spikes/F6.md, synthetic fixtures in `tests/fixtures/transcript/`), plan in docs/design/F6-vista-enriquecida.md. F6.0b (TUI screens/keys spike) done. F6.4 (prompt cards) done. F6.5 (controls bar, `/` and `@` palettes) done. Next, when the user asks: F6.6 (polish), then post-MVP (Claude <-> Codex brief, packaging). See ROADMAP.md and docs/spikes/F0.md.
+F0-F4, F4.1 (daisyUI UI + auto-continue), F5 (Codex, same-provider), F5.1 (official usage bars, Relay-only history, logo; committed) done; F5.2 (compact, collapsible account cards; UI state in localStorage) done. F6.1 (transcript parser + `session:*` IPC) and F6.2 (conversation view) and F6.3 (chat-first core: hidden-but-live terminal, screen classifier, composer bridge, Stop) done on `feat/f6`. F6 (Vista enriquecida) in progress: F6.0 research spike done (docs/spikes/F6.md, synthetic fixtures in `tests/fixtures/transcript/`), plan in docs/design/F6-vista-enriquecida.md. F6.0b (TUI screens/keys spike) done. F6.4 (prompt cards) done. F6.5 (controls bar, `/` and `@` palettes) done. Local macOS packaging (`bun run dist:mac`, ad-hoc signed, not notarized) done. Next, when the user asks: F6.6 (polish), then post-MVP (Claude <-> Codex brief, packaging). See ROADMAP.md and docs/spikes/F0.md.
 
 Known limitations (details in README): usage bars come from the status line of sessions opened after the toggle; a project-level `statusLine` is overridden by Relay's `--settings` (only the account's user settings.json is chained); Codex `rate_limits` shape is unverified against a real account; `/rewind` file-history stays on the source account; in-CLI `/clear` / `/resume` can make the tracked session id stale; shared-memory symlink behaviour of the CLI is unverified by hand; Codex: the interactive `codex login` flow and the logged-in `login status` output are unverified, Codex cards show no email/plan/tokens, quota wording is verified only against a stubbed backend (docs/spikes/F5.md); the on-disk shape of sub-agent rollouts comes from the binary's strings, not a live multi-agent run; project paths whose encoded name exceeds 200 chars are refused.

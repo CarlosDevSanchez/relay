@@ -479,3 +479,38 @@ describe('createFeed (renderer state per tab)', () => {
     expect(n).toBe(1)
   })
 })
+
+describe('slash command / bang pseudo-XML (synthetic claude-commands.jsonl)', () => {
+  const es = ev('claude-commands').events
+  it('shows commands as plain text and their output as info notices', () => {
+    expect(es.map((e) => (e.kind === 'message' ? `${e.role}:${e.text}` : e.kind === 'notice' && e.notice === 'info' ? `info:${e.text}` : '?'))).toEqual([
+      'user:/model opus',
+      'info:Set model to Opus 4.1',
+      'user:! ls -la',
+      'info:a.txt',
+      'user:explica <command-name> en este texto'
+    ])
+  })
+  it('handles reordered tags, empty args, message fallback, caveat and empty output', () => {
+    const p = createParser()
+    const u = (content: string, n: number) => p.push(JSON.stringify({ type: 'user', uuid: 'u' + n, timestamp: '2026-01-01T00:00:00Z', message: { content } }), n * 100)
+    u('<command-args></command-args><command-name>/compact</command-name>', 1)
+    u('<command-message>clear</command-message>', 2)
+    u('<local-command-caveat>x</local-command-caveat>', 3)
+    u('<local-command-stdout></local-command-stdout>', 4)
+    u('<local-command-stderr>bad\u0007\nline</local-command-stderr>', 5)
+    expect(p.flush().events.map((e) => (e.kind === 'message' || (e.kind === 'notice' && e.notice === 'info') ? e.text : '?'))).toEqual(['/compact', '/clear', 'bad\nline'])
+  })
+  it('keeps a complete tag pair inside a normal prompt verbatim, caps and cleans output', () => {
+    const p = createParser()
+    const u = (content: string, n: number) => p.push(JSON.stringify({ type: 'user', uuid: 'v' + n, timestamp: '2026-01-01T00:00:00Z', message: { content } }), n * 100)
+    u('<command-name>/x</command-name> hola', 1)
+    u('<local-command-stdout>' + 'a'.repeat(600) + '</local-command-stdout>', 2)
+    u('<local-command-stdout>\u001b]8;;http://e.x\u0007link\u001b]8;;\u0007 \u001b[1mok\u001b[22m</local-command-stdout>', 3)
+    u('<bash-stdout>one</bash-stdout><bash-stdout>two</bash-stdout>', 4)
+    const t = p.flush().events.map((e) => (e.kind === 'message' || (e.kind === 'notice' && e.notice === 'info') ? e.text : '?'))
+    expect(t[0]).toBe('<command-name>/x</command-name> hola')
+    expect(t[1]).toBe('a'.repeat(500) + '…')
+    expect(t.slice(2)).toEqual(['link ok', 'one\ntwo'])
+  })
+})
